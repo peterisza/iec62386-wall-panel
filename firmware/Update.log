@@ -1,0 +1,11 @@
+
+
+
+ ------------------------Start Firmware update--------------------------- 
+----TRACE----call updateCore(firmware)
+----TRACE---------------eZ_FET start BSL update------------------------------;
+----TRACE--- Did not find any HIDs
+----TRACE----fetHandle->shutdown()
+----TRACE----MSPBSL_Factory::getMSPBSL_Connection()
+
+---------------------Firmware upate end--------------------------
