@@ -1,4 +1,4 @@
-size = 80.5;            
+size = 80;            
 plate_thickness = 2.4;       
 air_duct_th = 1.2;
 air_duct_w = 8;
@@ -7,7 +7,7 @@ screw_head_height = 2;
 pcb_th = 1.6;
 box_size = 46;
 box_max_r = 57.6/2;
-conn_d = 10.5;
+conn_d = 9.5;
 behind_pcb = 5;
 screw_insulation_h = 3.5;
 box_th = 1;
@@ -77,15 +77,17 @@ module screw_holes(w, l, h) {
 module connector_holes()
 {
     distance = 38.6;
-    margin = 0.25;
+    margin = 1.5;
     translate([-distance/2, 0, 0])
        cube([2.65+margin, 25.6+margin, 20], center = true);
     translate([distance/2, 0, 0])
        cube([2.65+margin, 25.6+margin, 20], center = true);
     translate([0, -distance/2, 0])
-        cube([14+margin, 2.65+margin, 20], center = true);
+        cube([14+margin, 1.65+margin, 20], center = true);
     translate([0, distance/2, 0])
-        cube([14+margin, 2.65+margin, 20], center = true);
+        cube([14+margin, 1.65+margin, 20], center = true);
+    translate([105.75-108.2, -85.175+87.254386, 0])
+        cube([3.7, 4.45, 20], center = true);
 }
 
 module main_plate()
@@ -229,6 +231,16 @@ module box()
 box();*/
 
 
+module mouse_ears()
+{
+    th = 0.2;
+    for (ang = [0:90:270]) {
+        rotate([0,0,ang])
+            translate([-size/2,-size/2, plate_thickness/2-th/2])
+                cylinder(h=th, r=10, center = true);
+    }
+}
+
 difference() {
   union() {
    main_plate();
@@ -245,6 +257,7 @@ difference() {
             fucked_up_square(box_max_r-box_th-box_panel_spacing, box_size-box_th*2-1, box_size-box_th*2-1);
     }
     box_guard();
+    mouse_ears();
   }
   union() {
     screw_holes(4, 10, 10);
