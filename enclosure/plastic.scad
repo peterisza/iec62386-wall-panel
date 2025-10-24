@@ -1,5 +1,6 @@
 size = 80;            
-plate_thickness = 2.4;       
+plate_thickness = 2.4;
+air_duct_pitch = 19.2;       
 air_duct_th = 1.2;
 air_duct_w = 8;
 screw_enforcement_thickness = 1;
@@ -15,12 +16,12 @@ box_corner_r = 6;
 clip_width = 10;
 clip_h = 2;
 screw_distance = 17.7;
-screw_hole_d = 3.0;
-panel_screw_insulation_d = 5.4;
-box_screw_platform_hole_d = 5.9;
-box_screw_hole_d = 3.6;
+screw_hole_d = 2.0;
+panel_screw_insulation_d = 4.5;
+box_screw_platform_hole_d = 5.2;
+box_screw_hole_d = 2.8;
 box_screw_tightness = 0.2;
-box_panel_spacing = 0.2;
+box_panel_spacing = 0.5;
 centered = true;
 center = true;
 box_start_z = plate_thickness/2;
@@ -77,19 +78,32 @@ module screw_holes(w, l, h) {
 module connector_holes()
 {
     distance = 38.6;
-    margin = 1.5;
+    margin2 = 4;
+    margin1 = 0.5;
+    side_pins_depth = 1.4;
+    
+    conn_w = 2.65;
+    conn_l = 25.6;
+    
+    translate([-distance/2, 0, plate_thickness/2-side_pins_depth/2])
+       cube([conn_w+margin2, conn_l+margin2, side_pins_depth], center = true);
     translate([-distance/2, 0, 0])
-       cube([2.65+margin, 25.6+margin, 20], center = true);
-    translate([distance/2, 0, 0])
-       cube([2.65+margin, 25.6+margin, 20], center = true);
-    translate([0, -distance/2, 0])
-        cube([14+margin, 1.65+margin, 20], center = true);
-    translate([0, distance/2, 0])
-        cube([14+margin, 1.65+margin, 20], center = true);
-    translate([105.75-108.2, -85.175+87.254386, 0])
-        cube([3.7, 4.45, 20], center = true);
-}
+       cube([conn_w+margin1, conn_l+margin1, 20], center = true);
 
+    translate([distance/2, 0, plate_thickness/2-side_pins_depth/2])
+       cube([conn_w+margin2, conn_l+margin2, side_pins_depth], center = true);
+    translate([distance/2, 0, 0])
+       cube([conn_w+margin1, conn_l+margin1, 20], center = true);
+
+       
+    translate([0, -distance/2, 0])
+        cube([14, 2, 20], center = true);
+    translate([0, distance/2, 0])
+        cube([14, 2, 20], center = true);
+    /*translate([105.75-108.2, -85.175+87.254386, 0])
+        cube([3.7+margin, 4.45+margin, 20], center = true);*/
+}
+//connector_holes();
 module main_plate()
 {
     difference() {
@@ -100,11 +114,22 @@ module main_plate()
     }
 }
 
+module main_plate_enforcement()
+{
+    th = 2;
+    
+    for (ang = [45:90:135]) {
+        rotate([0, 0, ang])
+        translate([0,0,-plate_thickness/2-th/2])
+            cube([sqrt(2)*screw_distance*2, 2, 2], center = true);
+    }
+}
+
 module air_ducts()
 {
     w = air_duct_w;
     t = air_duct_th+frame_h;
-    pitch = 18;
+    pitch = air_duct_pitch;
     displacement = plate_thickness/2-t/2+0.001+frame_h;
     
     translate([-pitch, 0, displacement])
@@ -181,8 +206,8 @@ module box()
     r = box_corner_r;
     
     conn_w = 16.5;
-    conn_h = 8.2+box_th;
-    conn_x = -5.2;
+    conn_h = 8.3+box_th;
+    conn_x = -5.4;
     conn_d = behind_pcb + box_th - 0.0;
     
     box_screw_platform_h = behind_pcb - screw_insulation_h - 0.3;
@@ -202,17 +227,15 @@ module box()
                 union()
                 {
                     translate([0,0,box_screw_platform_h2+box_th])
-                        pcb_platform(box_screw_platform_h2, 8.2, box_screw_platform_hole_d);
+                        pcb_platform(box_screw_platform_h2, 7.9, box_screw_platform_hole_d);
                     translate([0,0,box_screw_platform_h+box_th])
                         screw_platform(box_screw_platform_h, 7.7, box_screw_hole_d);
                 }
                 linear_extrude(box_height-0.1)
                     fucked_up_square(box_max_r-box_th, w-box_th*2, h-box_th*2);
             }
-
            /* translate([conn_x, +h/2-conn_h/2-box_th/2+0.01, -0.01+conn_d/2])
                 cube([conn_w+box_th*2, conn_h+box_th, conn_d], center=true);*/
-            
         }
         union() {
             translate([conn_x, +h/2-conn_h/2+0.01, -0.01+conn_d/2])
@@ -225,31 +248,30 @@ module box()
     }
 }
 
-
-
-/*translate([0, 0, -box_start_z])
-box();*/
-
-
 module mouse_ears()
 {
     th = 0.2;
     for (ang = [0:90:270]) {
         rotate([0,0,ang])
-            translate([-size/2,-size/2, plate_thickness/2-th/2])
+            translate([-size/2+2,-size/2+2, plate_thickness/2-th/2])
                 cylinder(h=th, r=10, center = true);
     }
 }
 
+/*translate([0, 0, -box_start_z])
+box();*/
+
+
 difference() {
   union() {
    main_plate();
+   main_plate_enforcement();
       
    translate([0, 0, -box_start_z])
    intersection()
     {
           union() {
-            pcb_platform(conn_d, 8, screw_hole_d);
+            pcb_platform(conn_d, 7.2, screw_hole_d);
             screw_platform(conn_d+pcb_th+screw_insulation_h, panel_screw_insulation_d, screw_hole_d);
           }
           translate([0, 0, -50])
@@ -267,3 +289,4 @@ difference() {
     air_ducts();
   }
 }
+

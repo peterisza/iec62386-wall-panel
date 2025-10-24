@@ -1,8 +1,17 @@
+#include <stdint.h>
 #include <msp430.h>
 
-#define BUZZ1   BIT1        // P1.1
-#define BUZZ2   BIT5        // P1.5
-#define HALF_PERIOD_CYCLES  125   // ~250 us @ 1 MHz  -> ~2 kHz (500 us periódus)
+//#include "rom_captivate.h"
+//#include "CAPT_Type.h"
+
+
+//extern tSensor sensor_buttons;      // a kétgombos szenzorod
+//extern tCaptivateApplication g_uiApp;
+
+#define HALF_PERIOD_CYCLES 250
+#define BUZZ1   BIT1   // P1.1
+#define BUZZ2   BIT5   // P1.5
+
 
 static void beep_2k_short(void)
 {
@@ -23,30 +32,14 @@ static void beep_2k_short(void)
     P1OUT &= ~(BUZZ1 | BUZZ2);
 }
 
-void uart_send_string(const char* str) {
-    while (*str) {
-        while (!(UCA0IFG & UCTXIFG));  // Wait for TX buffer to be ready
-        UCA0TXBUF = *str++;            // Send character
-    }
-    // Wait for transmission to complete
-    while (!(UCA0IFG & UCTXIFG));
-}
-
-void uart_send_char(char c) {
-    while (!(UCA0IFG & UCTXIFG));      // Wait for TX buffer to be ready
-    UCA0TXBUF = c;                     // Send character
-    // Wait for transmission to complete
-    while (!(UCA0IFG & UCTXIFG));
-}
-
 void delay_ms(volatile unsigned int ms) {
     while (ms--) {
         __delay_cycles(4000);  // Approximate 1ms delay at 4MHz
     }
 }
 
-// Initialize UART 
-void uart_init(void) {
+static void uart_tx_init_9600_smclk_1mhz(void)
+{
     // Temporarily disable clock_init to restore UART functionality
     
     // Configure UCA0TXD on P1.4 for MSP430FR2675
@@ -80,10 +73,18 @@ void uart_init(void) {
     UCA0CTLW0 &= ~UCSWRST;             // Release UART from reset
 }
 
-int main(void){
-    WDTCTL = WDTPW | WDTHOLD;      // watchdog off
-    PM5CTL0 &= ~LOCKLPM5;          // FRxx: GPIO-k engedélyezése
+static inline void uart_tx_byte(uint8_t b)
+{
+    while (!(UCA0IFG & UCTXIFG));
+    UCA0TXBUF = b;
+}
+static void uart_tx_str(const char* s)
+{
+    while (*s) uart_tx_byte((uint8_t)*s++);
+}
 
+void gpio_init()
+{
     // Válasszuk a GPIO funkciót ezekre a pinekre
     P1SEL0 &= ~(BUZZ1 | BUZZ2);
     P1SEL1 &= ~(BUZZ1 | BUZZ2);
@@ -92,46 +93,63 @@ int main(void){
     P1DIR  |=  (BUZZ1 | BUZZ2);
     P1OUT  &= ~(BUZZ1 | BUZZ2);
 
-    // Rövid ~2 kHz beep
-    delay_ms(500);
-    beep_2k_short();
-
-    // P2.0, P2.1 kimenet, kezdőállapot 10
     P2SEL0 &= ~(BIT0 | BIT1);
     P2SEL1 &= ~(BIT0 | BIT1);
     P2REN  &= ~(BIT0 | BIT1);
     P2DIR  |=  (BIT0 | BIT1);
     P2OUT = (P2OUT & ~(BIT0 | BIT1)) | BIT0;
+}
 
-    // Timer_A0: ACLK forrás, up mode, CCR0 megszakítással
-    // Alapértelmezésben ACLK egy lassú belső óra (REFO~32768 Hz vagy VLO~10 kHz).
+void timer_init()
+{
     TA0CTL   = TASSEL__ACLK | ID__1 | MC__UP | TACLR;
-    // Ha ACLK=~32768 Hz → 16384 ~ 0.5 s. Ha ACLK=~10 kHz → 5000 ~ 0.5 s.
     TA0CCR0  = 10000;          // Kezdd ezzel; ha túl gyors/lassú, állítsd 5000-re.
     TA0CCTL0 = CCIE;               // engedélyezzük a CCR0 megszakítást
-
     __bis_SR_register(GIE);        // globál interrupt engedély
-    
-    // Initialize UART for debug output AFTER timer setup
-    uart_init();
-    
-    // Send debug message at startup - back to 9600 baud
-    uart_send_string("MSP430FR2675 started at 9600 baud\r\n");
-    
-    // Continuous debug loop for UART testing
-    for(;;){
-        // Send simple patterns for easier recognition
-        uart_send_char(0x55);              // 01010101 pattern - easy to see on scope
-        uart_send_char(0xAA);              // 10101010 pattern - inverted
-        
-        // Send clear text message
-        uart_send_string("DEBUG 9600 baud\r\n");
-        
-        // Longer delay to ensure transmission completes and for easier observation
-        volatile unsigned long delay = 100000UL;
-        while (delay--) {
-            __no_operation();
+}
+
+static inline uint16_t get_buttons_mask(void)
+{
+    // ROM-os hívás esetén:
+    return MAP_CAPT_getSensorState(&sensor_buttons);
+    return 0;
+}
+
+int main(void)
+{
+    WDTCTL = WDTPW | WDTHOLD;
+    PM5CTL0 &= ~LOCKLPM5;
+
+    gpio_init();
+    delay_ms(500);
+    beep_2k_short();
+
+    timer_init();
+    uart_tx_init_9600_smclk_1mhz();
+
+    // CapTIvate indulás
+//    MAP_CAPT_appStart();
+//    MAP_CAPT_calibrateUI(&g_uiApp);
+
+    uint16_t prev = 0;
+
+    for (;;)
+    {
+//        MAP_CAPT_updateUI(&g_uiApp);
+        uint16_t mask = get_buttons_mask();
+        uint16_t rising = (~prev) & mask;
+
+        // egyszerű CSV sor: "t,btn0,btn1\r\n"
+        uart_tx_str("t,");
+        uart_tx_byte((mask & BIT0) ? '1' : '0'); uart_tx_byte(',');
+        uart_tx_byte((mask & BIT1) ? '1' : '0'); uart_tx_str("\r\n");
+
+        if (rising & (BIT0 | BIT1)) {
+            beep_2k_short();
         }
+
+        prev = mask;
+        __delay_cycles(1000);
     }
 }
 

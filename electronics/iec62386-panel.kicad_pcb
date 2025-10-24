@@ -15779,6 +15779,17 @@
 		(uuid "4e34eff2-e4a1-47eb-a061-d232fe8fa836")
 	)
 	(gr_rect
+		(start 103.9 82.95)
+		(end 107.6 87.4)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "Dwgs.User")
+		(uuid "78c8d0aa-6938-45e3-a37b-aa7f988e9e9a")
+	)
+	(gr_rect
 		(start 123 65.75)
 		(end 129.7 72.45)
 		(stroke

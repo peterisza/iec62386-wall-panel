@@ -1,5 +1,20 @@
 #include <msp430.h>
 
+
+
+#include "rom_headers/rom_captivate_msp430fr2676_family.h"
+/* CapTIvate alap típusok és app API */
+#include "captivate.h"
+#include "CAPT_Type.h"
+
+/* A generált konfiguráció NEVEIT is ez adja (g_uiApp, g_*Sensor, stb.) */
+#include "CAPT_UserConfig.h"
+
+/* ROM + MAP (ebben a sorrendben!) */
+#include "rom_captivate.h"
+#include "rom_map_captivate.h"
+
+
 #define BUZZ1   BIT1        // P1.1
 #define BUZZ2   BIT5        // P1.5
 #define HALF_PERIOD_CYCLES  125   // ~250 us @ 1 MHz  -> ~2 kHz (500 us periódus)
@@ -80,6 +95,7 @@ void uart_init(void) {
     UCA0CTLW0 &= ~UCSWRST;             // Release UART from reset
 }
 
+
 int main(void){
     WDTCTL = WDTPW | WDTHOLD;      // watchdog off
     PM5CTL0 &= ~LOCKLPM5;          // FRxx: GPIO-k engedélyezése
@@ -118,26 +134,37 @@ int main(void){
     // Send debug message at startup - back to 9600 baud
     uart_send_string("MSP430FR2675 started at 9600 baud\r\n");
     
-    // Continuous debug loop for UART testing
-    for(;;){
-        // Send simple patterns for easier recognition
-        uart_send_char(0x55);              // 01010101 pattern - easy to see on scope
-        uart_send_char(0xAA);              // 10101010 pattern - inverted
+    // Initialize the complete CapTIvate system first
+    CAPT_appStart();
+    uart_send_string("CapTIvate system started\r\n");
+    
+    // Now we can access individual sensors
+    uart_send_string("Sensor initialized\r\n");
+    uart_send_string("Sensor calibrated\r\n");
+
+    for (;;)
+    {
+        // Update the complete UI instead of individual sensors
+        CAPT_updateUI(&g_uiApp);
+        //uart_send_string("UI updated\r\n");
         
-        // Send clear text message
-        uart_send_string("DEBUG 9600 baud\r\n");
-        
-        // Longer delay to ensure transmission completes and for easier observation
-        volatile unsigned long delay = 100000UL;
-        while (delay--) {
-            __no_operation();
-        }
+        /*if (rising & (BIT0 | BIT1)) {
+            beep_2k_short();
+        }*/
+
+        // Access elements through the cycle structure
+        uart_send_char(arrows.pCycle[0]->pElements[0]->bTouch ? '1' : '0');
+        uart_send_char(arrows.pCycle[0]->pElements[1]->bTouch ? '1' : '0');
+        uart_send_string("\r\n");
+
+        __delay_cycles(1000);
     }
+
 }
 
-// GCC-stílusú ISR a TIMER0_A0 vektorhoz
-__attribute__((interrupt(TIMER0_A0_VECTOR)))
-void TIMER0_A0_ISR(void){
+#pragma vector=TIMER0_A0_VECTOR
+__interrupt void TIMER0_A0_ISR(void)
+{
     // Polarításfüggetlen váltás: 10 <-> 01
     if (P2OUT & BIT0) {
         P2OUT = (P2OUT & ~(BIT0 | BIT1)) | BIT1;
