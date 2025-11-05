@@ -1,148 +1,203 @@
 #include <msp430.h>
+#include "uart.h"
+#include "watchdog.h"
+#include "i2c.h"
+#include "util.h"
+#include "gpio.h"
+#include "ens210_temperature_sensor.h"
+#include "lps22hh_barometer.h"
+#include "stcc4_co2_sensor.h"
+#include "captivate.h"
+#include "CAPT_Type.h"
+#include "CAPT_UserConfig.h"
+#include "CAPT_App.h"
+#include "rom_captivate.h"
+#include "rom_map_captivate.h"
+#include "touch.h"
+#include "buzzer.h"
+#include "scheduler.h"
 
-#define BUZZ1   BIT1        // P1.1
-#define BUZZ2   BIT5        // P1.5
-#define HALF_PERIOD_CYCLES  125   // ~250 us @ 1 MHz  -> ~2 kHz (500 us periódus)
+ens210_data_t g_ens210_data;
+lps22hh_data_t g_lps22hh_data;
+stcc4_data_t g_stcc4_data;
 
-static void beep_2k_short(void)
+void ens210_start_measurement_task(void)
 {
-    // ~100 ms-nyi beep: 100 ms / 250 us = 400 félperiódus togglé
-    const unsigned int toggles = 150;
-    unsigned int i;
-
-    // Kezdőállapot: ellentétes fázis
-    // BUZZ1 magas, BUZZ2 alacsony -> majd mindkettőt egyszerre togglézzuk
-    P1OUT = (P1OUT & ~(BUZZ1 | BUZZ2)) | BUZZ1;
-
-    for (i = 0; i < toggles; i++) {
-        P1OUT ^= (BUZZ1 | BUZZ2);
-        __delay_cycles(HALF_PERIOD_CYCLES);
-    }
-
-    // Leállítás: mindkettő alacsony (nincs DC a piezón)
-    P1OUT &= ~(BUZZ1 | BUZZ2);
+    ens210_start_single_shot(ENS210_START_T | ENS210_START_H);
 }
 
-void uart_send_string(const char* str) {
-    while (*str) {
-        while (!(UCA0IFG & UCTXIFG));  // Wait for TX buffer to be ready
-        UCA0TXBUF = *str++;            // Send character
-    }
-    // Wait for transmission to complete
-    while (!(UCA0IFG & UCTXIFG));
+void lps22hh_start_measurement_task(void)
+{
+    lps22hh_start_one_shot(LPS22HH_ADDR_SA0_VDD);
 }
 
-void uart_send_char(char c) {
-    while (!(UCA0IFG & UCTXIFG));      // Wait for TX buffer to be ready
-    UCA0TXBUF = c;                     // Send character
-    // Wait for transmission to complete
-    while (!(UCA0IFG & UCTXIFG));
+void stcc4_start_measurement_task(void)
+{
+    stcc4_start_single_shot(STCC4_ADDR_GND);
 }
 
-void delay_ms(volatile unsigned int ms) {
-    while (ms--) {
-        __delay_cycles(4000);  // Approximate 1ms delay at 4MHz
-    }
+void stcc4_push_compensation_task(void)
+{
+    stcc4_push_compensation(STCC4_ADDR_GND, g_ens210_data.temperature_C, g_ens210_data.humidity_RH, g_lps22hh_data.pressure_hPa * 100);
 }
 
-// Initialize UART 
-void uart_init(void) {
-    // Temporarily disable clock_init to restore UART functionality
-    
-    // Configure UCA0TXD on P1.4 for MSP430FR2675
-    P1SEL0 |= BIT4;                    // Enable UART function on P1.4
-    P1SEL1 &= ~BIT4;
-    
-    // Ensure pin starts HIGH as GPIO before switching to UART function
-    P1OUT |= BIT4;                     // Set pin HIGH before enabling UART
-    P1DIR |= BIT4;                     // Set as output initially
-    
-    // UART idle state should be HIGH (mark state)
-    
-    // Configure UART module - explicit 8N1 settings
-    UCA0CTLW0 |= UCSWRST;              // Put UART in reset state
-    UCA0CTLW0 |= UCSSEL__SMCLK;        // Use SMCLK as clock source
-    
-    // Explicitly set 8N1 format (8 data bits, no parity, 1 stop bit)
-    UCA0CTLW0 &= ~UCSPB;               // 1 stop bit (clear UCSPB)
-    UCA0CTLW0 &= ~UCPEN;               // No parity (clear UCPEN)
-    UCA0CTLW0 &= ~UCPAR;               // Even parity if enabled (clear UCPAR)
-    UCA0CTLW0 &= ~UCMSB;               // LSB first (clear UCMSB)
-    UCA0CTLW0 &= ~UC7BIT;              // 8 data bits (clear UC7BIT)
-    
-    // Back to working 9600 baud configuration
-    // With default SMCLK (~1.05MHz): target = 1050000 / (9600 * 16) = 6.84
-    // Use UCBR = 6, UCBRF = 9 (6 + 9/16 = 6.5625) for closest match to 6.84
-    UCA0BR0 = 6;                       // Base divisor = 6
-    UCA0BR1 = 0;                       // High byte of baud rate divisor  
-    UCA0MCTLW = UCOS16 | UCBRF_9;      // Fractional part 9/16 = 0.5625
-    
-    UCA0CTLW0 &= ~UCSWRST;             // Release UART from reset
+void ens210_read_results_task(void)
+{
+    ens210_read_results(&g_ens210_data);
+    uart_send_string("Temperature: ");
+    uart_send_string(ftoa(g_ens210_data.temperature_C));
+    uart_send_string(" C ");
+    uart_send_string("Humidity: ");
+    uart_send_string(ftoa(g_ens210_data.humidity_RH));
+    uart_send_string("%\r\n");
 }
 
-int main(void){
-    WDTCTL = WDTPW | WDTHOLD;      // watchdog off
-    PM5CTL0 &= ~LOCKLPM5;          // FRxx: GPIO-k engedélyezése
-
-    // Válasszuk a GPIO funkciót ezekre a pinekre
-    P1SEL0 &= ~(BUZZ1 | BUZZ2);
-    P1SEL1 &= ~(BUZZ1 | BUZZ2);
-
-    // Irány és kezdeti szint
-    P1DIR  |=  (BUZZ1 | BUZZ2);
-    P1OUT  &= ~(BUZZ1 | BUZZ2);
-
-    // Rövid ~2 kHz beep
-    delay_ms(500);
-    beep_2k_short();
-
-    // P2.0, P2.1 kimenet, kezdőállapot 10
-    P2SEL0 &= ~(BIT0 | BIT1);
-    P2SEL1 &= ~(BIT0 | BIT1);
-    P2REN  &= ~(BIT0 | BIT1);
-    P2DIR  |=  (BIT0 | BIT1);
-    P2OUT = (P2OUT & ~(BIT0 | BIT1)) | BIT0;
-
-    // Timer_A0: ACLK forrás, up mode, CCR0 megszakítással
-    // Alapértelmezésben ACLK egy lassú belső óra (REFO~32768 Hz vagy VLO~10 kHz).
-    TA0CTL   = TASSEL__ACLK | ID__1 | MC__UP | TACLR;
-    // Ha ACLK=~32768 Hz → 16384 ~ 0.5 s. Ha ACLK=~10 kHz → 5000 ~ 0.5 s.
-    TA0CCR0  = 10000;          // Kezdd ezzel; ha túl gyors/lassú, állítsd 5000-re.
-    TA0CCTL0 = CCIE;               // engedélyezzük a CCR0 megszakítást
-
-    __bis_SR_register(GIE);        // globál interrupt engedély
-    
-    // Initialize UART for debug output AFTER timer setup
-    uart_init();
-    
-    // Send debug message at startup - back to 9600 baud
-    uart_send_string("MSP430FR2675 started at 9600 baud\r\n");
-    
-    // Continuous debug loop for UART testing
-    for(;;){
-        // Send simple patterns for easier recognition
-        uart_send_char(0x55);              // 01010101 pattern - easy to see on scope
-        uart_send_char(0xAA);              // 10101010 pattern - inverted
-        
-        // Send clear text message
-        uart_send_string("DEBUG 9600 baud\r\n");
-        
-        // Longer delay to ensure transmission completes and for easier observation
-        volatile unsigned long delay = 100000UL;
-        while (delay--) {
-            __no_operation();
-        }
-    }
+void lps22hh_read_results_task(void)
+{
+    lps22hh_read_results(LPS22HH_ADDR_SA0_VDD, &g_lps22hh_data);
+    uart_send_string("Pressure: ");
+    uart_send_string(ftoa(g_lps22hh_data.pressure_hPa));
+    uart_send_string(" hPa ");
+    uart_send_string("Temperature: ");
+    uart_send_string(ftoa(g_lps22hh_data.temperature_C));
+    uart_send_string("C\r\n");
 }
 
-// GCC-stílusú ISR a TIMER0_A0 vektorhoz
-__attribute__((interrupt(TIMER0_A0_VECTOR)))
-void TIMER0_A0_ISR(void){
-    // Polarításfüggetlen váltás: 10 <-> 01
-    if (P2OUT & BIT0) {
-        P2OUT = (P2OUT & ~(BIT0 | BIT1)) | BIT1;
+void stcc4_read_results_task(void)
+{
+    stcc4_read_measurement(STCC4_ADDR_GND, &g_stcc4_data);
+    uart_send_string("CO2: ");
+    uart_send_string(ftoa(g_stcc4_data.co2_ppm));
+    uart_send_string("ppm, Temperature: ");
+    uart_send_string(ftoa(g_stcc4_data.temperature_C));
+    uart_send_string(" C, ");
+    uart_send_string("Humidity: ");
+    uart_send_string(ftoa(g_stcc4_data.humidity_RH));
+    uart_send_string("%");
+    if(!g_stcc4_data.crc_ok) {
+        uart_send_string(", CRC error");
     } else {
-        P2OUT = (P2OUT & ~(BIT0 | BIT1)) | BIT0;
+        uart_send_string(", CRC ok");
     }
-    // CCR0 flag általában automatikusan törlődik, külön nem kell
+    uart_send_string("\r\n");
+}
+
+int main(void)
+{
+    disable_watchdog();
+    
+    // Power-on stabilization delay - critical for reliable startup
+    // This ensures clocks and power domains are stable before initialization
+    __delay_cycles(100000);        // Wait ~100ms at ~1MHz for clocks to stabilize
+    i2c_init(1000000u, 100000u);
+
+    gpio_init();
+    uart_init();
+    touch_init();
+    buzzer_init(0);
+ 
+    __bis_SR_register(GIE);        // globál interrupt engedély
+    scheduler_init(g_uiApp.ui16ActiveModeScanPeriod, 1000);
+
+    scheduler_add_task(ens210_start_measurement_task, 200);
+    scheduler_add_task(ens210_read_results_task, 2000);
+
+    scheduler_add_task(lps22hh_start_measurement_task, 250);
+    scheduler_add_task(lps22hh_read_results_task, 2000);
+
+    scheduler_add_task(stcc4_push_compensation_task, 300);
+    scheduler_add_task(stcc4_start_measurement_task, 1000);
+    scheduler_add_task(stcc4_read_results_task, 5000);
+
+    for(;;)
+    {
+        CAPT_appHandler();        // ez indítja a scanneket és hívja a callbacket
+        
+        /*uart_send_string(itoa_padded(g_x, 10));
+        uart_send_string(itoa_padded(g_y, 10));
+        uart_send_string(itoa_padded(g_sum, 10));
+        
+        uart_send_string("\r\n");*/
+        
+        
+        if(g_eventTap) {
+            buzzer_beep(2000, 10);
+            uart_send_string("Tap\r\n");
+            g_eventTap = 0;
+        }
+        if(g_eventUp) {
+            buzzer_beep(4000, 10);
+            uart_send_string("Up\r\n");
+            g_eventUp = 0;
+        }
+        if(g_eventDown) {
+            buzzer_beep(1000, 10);
+            uart_send_string("Down\r\n");
+            g_eventDown = 0;
+        }
+        
+        scheduler_tick();
+
+        CAPT_appSleep();
+    }
+    
+    while(1)
+    {
+        uart_send_string("--------------------------------\r\n");
+    
+        ens210_start_single_shot(ENS210_START_T | ENS210_START_H);
+        // tipikus konverziós idő ~130 ms (datasheet); várj annyit, vagy poll-ozd SENS_STAT-ot
+        __delay_cycles(130000);
+        ens210_data_t e;
+        ens210_read_results(&e);
+        uart_send_string("Temperature: ");
+        uart_send_string(ftoa(e.temperature_C));
+        uart_send_string(" C ");
+        uart_send_string("Humidity: ");
+        uart_send_string(ftoa(e.humidity_RH));
+        uart_send_string("%\r\n");
+
+        // --- LPS22HH one-shot ---
+        lps22hh_start_one_shot(LPS22HH_ADDR_SA0_VDD);
+        // one-shot után a STATUS P_DA/T_DA bitek jelzik a készenlétet
+        __delay_cycles(200000); // pár ms
+        lps22hh_data_t p;
+        lps22hh_read_results(LPS22HH_ADDR_SA0_VDD, &p);
+        uart_send_string("Pressure: ");
+        uart_send_string(ftoa(p.pressure_hPa));
+        uart_send_string(" hPa ");
+        uart_send_string("Temperature: ");
+        uart_send_string(ftoa(p.temperature_C));
+        uart_send_string("C\r\n");
+ 
+
+        bool success = stcc4_push_compensation(STCC4_ADDR_GND, e.temperature_C, e.humidity_RH, p.pressure_hPa * 100);
+        if (!success) { 
+            uart_send_string("Failed to push compensation\r\n");
+        } else {
+            uart_send_string("Compensation pushed\r\n");
+        }
+        // --- STCC4 single-shot ---
+        stcc4_start_single_shot(STCC4_ADDR_GND);
+        __delay_cycles(1500000); // ~500 ms
+        stcc4_data_t c;
+        stcc4_read_measurement(STCC4_ADDR_GND, &c);
+        uart_send_string("CO2: ");
+        uart_send_string(ftoa(c.co2_ppm));
+        uart_send_string("ppm, Temperature: ");
+        uart_send_string(ftoa(c.temperature_C));
+        uart_send_string(" C, ");
+        uart_send_string("Humidity: ");
+        uart_send_string(ftoa(c.humidity_RH));
+        uart_send_string("%");
+        if(!c.crc_ok) {
+            uart_send_string(", CRC error");
+        } else {
+            uart_send_string(", CRC ok");
+        }
+
+        uart_send_string("\r\n");
+
+        __delay_cycles(5000000);
+    }
 }
