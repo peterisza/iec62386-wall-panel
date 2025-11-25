@@ -1,0 +1,12 @@
+kisebb FB oszto?
+kondi FB-re?
+kondi EN-re?
+arnyekolt tekercs?
+kisebb elko footprint
+fix fuse footprint
+2 tranzisztoros aramkorlat
+lehuzo a TEST programozo labra
+hangosabb buzzer (buzzer ellenallasok kisebbre?)
+GND pour
+4.7k I2C pullup?
+DALI RX jel megjavitasa (schottky-dioda + lehuzo ellenallas?)

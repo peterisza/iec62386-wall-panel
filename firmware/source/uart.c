@@ -9,6 +9,9 @@ static volatile char tx_buffer[UART_TX_BUFFER_SIZE];
 static volatile uint8_t tx_head = 0;
 static volatile uint8_t tx_tail = 0;
 
+static const char prefix_ok[] =    "\033[1;32m[   OK   ]\033[0m ";
+static const char prefix_error[] = "\033[1;31m[ ERROR! ]\033[0m ";
+
 // Calculate number of bytes in buffer
 static inline uint8_t tx_bytes_in_buffer(void) {
     if (tx_head >= tx_tail) {
@@ -48,13 +51,13 @@ void uart_init(void) {
     UCA0CTLW0 &= ~UCMSB;               // LSB first (clear UCMSB)
     UCA0CTLW0 &= ~UC7BIT;              // 8 data bits (clear UC7BIT)
     
-    // 115200 baud configuration in low-frequency mode
-    // With SMCLK (~1.05MHz): N = 1050000 / 115200 = 9.11
-    // Low-frequency mode (no oversampling): UCBR = 9
-    // Fractional part 0.11 is small, so no modulation needed (error ~1.2%)
-    UCA0BR0 = 9;                       // Base divisor = 9
+    // 115200 baud configuration in high-frequency mode (oversampling)
+    // With SMCLK (8 MHz): N = 8000000 / (16 * 115200) = 4.34
+    // High-frequency mode (oversampling): UCBR = 4, UCBRF = 5
+    // UCOS16 enables 16x oversampling for better accuracy
+    UCA0BR0 = 4;                       // Base divisor = 4
     UCA0BR1 = 0;                       // High byte of baud rate divisor  
-    UCA0MCTLW = 0;                     // No oversampling, no modulation
+    UCA0MCTLW = UCOS16 | UCBRF_5;     // Oversampling enabled, fractional part = 5
     
     // Initialize ring buffer
     tx_head = 0;
@@ -73,23 +76,21 @@ void uart_init(void) {
 static void uart_tx_start(void) {
     // If buffer is not empty
     if (tx_head != tx_tail) {
-        // Enable TX interrupt if not already enabled
-        if (!(UCA0IE & UCTXIE)) {
-            UCA0IE |= UCTXIE;
-        }
-        
-        // If TX buffer is ready and we haven't started sending yet, trigger immediately
-        // This handles the first character case
-        if ((UCA0IFG & UCTXIFG) && (tx_head != tx_tail)) {
-            UCA0TXBUF = tx_buffer[tx_tail];
-            tx_tail = (tx_tail + 1) % UART_TX_BUFFER_SIZE;
-        }
+        // Enable TX interrupt - the interrupt handler will send the first character
+        // This avoids race conditions by letting the interrupt handler manage all TX
+        // If UCTXIFG is already set, the interrupt will fire immediately
+        UCA0IE |= UCTXIE;
     }
 }
 
 // Pause TX interrupt to protect critical section (buffer modification)
+// Wait for any pending interrupt to complete before disabling
 static void uart_tx_pause(void) {
+    // Disable interrupt
     UCA0IE &= ~UCTXIE;
+    // Wait a few cycles to ensure any in-flight interrupt completes
+    // This prevents race conditions where we modify the buffer while interrupt is reading it
+    __delay_cycles(10);
 }
 
 void uart_send_char(char c) {
@@ -142,6 +143,27 @@ void uart_send_hex(const uint8_t* data, uint16_t len) {
     }
 }
 
+void uart_send_status_prefix(bool ok) {
+    uart_send_string(ok ? prefix_ok : prefix_error);
+}
+
+void uart_send_uint_dec(uint32_t value)
+{
+    char buf[11];
+    int idx = (int)sizeof(buf) - 1;
+    buf[idx] = '\0';
+    if (value == 0u) {
+        uart_send_char('0');
+        return;
+    }
+    while (value > 0u && idx > 0) {
+        idx--;
+        buf[idx] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+    uart_send_string(&buf[idx]);
+}
+
 // UART TX interrupt handler
 #pragma vector=USCI_A0_VECTOR
 __interrupt void USCI_A0_ISR(void) {
@@ -149,8 +171,11 @@ __interrupt void USCI_A0_ISR(void) {
     if (UCA0IFG & UCTXIFG) {
         if (tx_head != tx_tail) {
             // Send next byte from buffer
-            UCA0TXBUF = tx_buffer[tx_tail];
-            tx_tail = (tx_tail + 1) % UART_TX_BUFFER_SIZE;
+            // Read tx_tail before modifying to avoid race condition
+            uint8_t tail = tx_tail;
+            UCA0TXBUF = tx_buffer[tail];
+            // Update tail after writing to TXBUF to ensure atomicity
+            tx_tail = (tail + 1) % UART_TX_BUFFER_SIZE;
         } else {
             // Buffer empty, disable TX interrupt
             UCA0IE &= ~UCTXIE;

@@ -14,15 +14,9 @@ bool i2c_read (uint8_t addr7,       uint8_t *data, uint16_t len, uint32_t timeou
 // Regiszteres write/read
 bool i2c_write_reg(uint8_t addr7, uint8_t reg, const uint8_t *data, uint16_t len, uint32_t timeout_loops);
 bool i2c_read_reg (uint8_t addr7, uint8_t reg,       uint8_t *data, uint16_t len, uint32_t timeout_loops);
-
-// Írás majd olvasás
-bool i2c_write_then_read(uint8_t addr7,
-                         const uint8_t *wbuf, uint16_t wlen,
-                         uint8_t *rbuf,       uint16_t rlen,
-                         uint32_t timeout_loops);
+bool i2c_read_reg1(uint8_t addr7, uint8_t reg, uint8_t *value, uint32_t timeout_loops);
 
 // Hasznos kiegészítők
-bool i2c_probe(uint8_t addr7, uint32_t timeout_loops);     // gyors ACK‑teszt
 bool i2c_bus_busy(void);                                   // UCBUSY állapot
 bool i2c_recover_bus_gpio(void);                           // GPIO‑val 9 SCL pulzus + STOP
 void i2c_force_reset(void);                                // eUSCI_B0 gyors reset

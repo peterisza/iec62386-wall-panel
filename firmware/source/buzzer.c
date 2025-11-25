@@ -3,6 +3,7 @@
 static volatile uint32_t g_smclk = 1000000u;
 static volatile uint32_t g_periods_left = 0;
 static volatile uint8_t  g_busy = 0;
+static volatile uint8_t  g_stop_requested = 0;  // Flag to request PWM stop from main loop
 
 static inline void pins_init(void)
 {
@@ -117,7 +118,6 @@ __interrupt void TA0_CCR0_ISR(void)
         if (g_periods_left == 0) {
             g_busy = 0;
             pwm_stop_all();
-            // Timer0_A mehet is tovább, de meg is állíthatjuk (nem kötelező):
             TA0CTL = MC__STOP;
         }
     }

@@ -1,4 +1,6 @@
 #include "i2c.h"
+#include "uart.h"
+#include <string.h>
 
 // A mi lábkiosztásunk: P1.2 = SDA, P1.3 = SCL
 #define I2C_PORT_DIR   P1DIR
@@ -33,6 +35,100 @@ static void force_stop_and_clear(void)
     UCB0IFG &= ~UCNACKIFG;
 }
 
+static void i2c_debug(const char *msg)
+{
+    uart_send_status_prefix(false);
+    uart_send_string("I2C: ");
+    uart_send_string(msg);
+    uart_send_string("\r\n");
+}
+
+static bool wait_while_debug(const char *msg, volatile uint16_t *reg, uint16_t mask, bool while_set, uint32_t to)
+{
+    if (!wait_while(reg, mask, while_set, to)) {
+        if (msg) {
+            i2c_debug(msg);
+        }
+        force_stop_and_clear();
+        return false;
+    }
+    return true;
+}
+
+static bool ensure_bus_ready(uint32_t to)
+{
+    if (!wait_while_debug("timeout waiting for STOP to clear", &UCB0CTLW0, UCTXSTP, true, to)) {
+        return false;
+    }
+    if (!wait_while_debug("timeout waiting for bus free", &UCB0STATW, UCBBUSY, true, to)) {
+        return false;
+    }
+    return true;
+}
+
+static bool wait_tx_ready(uint32_t to)
+{
+    if (!wait_while_debug("timeout waiting for TXIFG", &UCB0IFG, UCTXIFG0, false, to)) {
+        return false;
+    }
+    if (UCB0IFG & UCNACKIFG) {
+        i2c_debug("NACK received during transmit");
+        force_stop_and_clear();
+        return false;
+    }
+    return true;
+}
+
+static bool write_byte(uint8_t value, uint32_t to)
+{
+    UCB0TXBUF = value;
+    return wait_tx_ready(to);
+}
+
+static bool write_buffer(const uint8_t *data, uint16_t len, uint32_t to)
+{
+    for (uint16_t i = 0; i < len; i++) {
+        uint8_t value = data ? data[i] : 0x00;
+        if (!write_byte(value, to)) {
+            i2c_debug("failed while writing buffer");
+            return false;
+        }
+    }
+    return true;
+}
+static bool read_bytes(uint8_t *data, uint16_t len, uint32_t to)
+{
+    if (len == 1) {
+        // 1 bájtos vétel: STT törlődés után AZONNAL állíts STOP-ot
+        UCB0CTLW0 |= UCTXSTP;
+        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) {
+            i2c_debug("timeout waiting for RXIFG (len=1)");
+            force_stop_and_clear();
+            return false;
+        }
+        data[0] = UCB0RXBUF;
+    } else {
+        for (uint16_t i = 0; i < len; i++) {
+            if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) {
+                i2c_debug("timeout waiting for RXIFG");
+                force_stop_and_clear();
+                return false;
+            }
+            if (i == (len - 2)) {
+                // N–1. bájt megérkezett -> már most kérj STOP-ot
+                UCB0CTLW0 |= UCTXSTP;
+            }
+            data[i] = UCB0RXBUF;
+        }
+    }
+    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) {
+        i2c_debug("timeout waiting for STOP after read");
+        force_stop_and_clear();
+        return false;
+    }
+    return true;
+}
+
 bool i2c_bus_busy(void)
 {
     return (UCB0STATW & UCBBUSY) != 0;
@@ -53,7 +149,10 @@ void i2c_init(uint32_t smclk_hz, uint32_t bus_hz)
     if (brw == 0) brw = 1;
     UCB0BRW = brw;
 
+    UCB0CTLW1 = UCASTP_2 | UCGLIT_0;
+
     UCB0CTLW0 &= ~UCSWRST; // engedély
+
     UCB0IFG = 0;
 }
 
@@ -111,163 +210,306 @@ bool i2c_recover_bus_gpio(void)
 
 bool i2c_write(uint8_t addr7, const uint8_t *data, uint16_t len, uint32_t to)
 {
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    if (!wait_while(&UCB0STATW, UCBBUSY,  true, to)) { force_stop_and_clear(); return false; }
+    bool ok = false;
 
-    UCB0I2CSA  = addr7;
-    UCB0CTLW0 |= UCTR | UCTXSTT; // TX + START
+    do {
+        if (!ensure_bus_ready(to)) {
+            break;
+        }
 
-    if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
+        UCB0I2CSA  = addr7;
+        UCB0CTLW0 |= UCTR | UCTXSTT; // TX + START
 
-    for (uint16_t i = 0; i < len; i++) {
-        UCB0TXBUF = (data ? data[i] : 0x00);
-        if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-        if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
-    }
+        if (!wait_tx_ready(to)) {
+            break;
+        }
 
-    UCB0CTLW0 |= UCTXSTP;
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    return true;
+        if (!write_buffer(data, len, to)) {
+            break;
+        }
+
+        UCB0CTLW0 |= UCTXSTP;
+        if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) {
+            force_stop_and_clear();
+            break;
+        }
+
+        ok = true;
+    } while (0);
+
+    return ok;
 }
 
 bool i2c_read(uint8_t addr7, uint8_t *data, uint16_t len, uint32_t to)
 {
     if (len == 0) return true;
+    if (!data) return false;
 
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    if (!wait_while(&UCB0STATW, UCBBUSY,  true, to)) { force_stop_and_clear(); return false; }
+    memset(data, 0, len);
 
-    UCB0I2CSA  = addr7;
-    UCB0CTLW0 &= ~UCTR;     // RX
-    UCB0CTLW0 |=  UCTXSTT;  // START
+    bool ok = false;
 
-    if (!wait_while(&UCB0CTLW0, UCTXSTT, true, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
+    do {
+        if (!ensure_bus_ready(to)) {
+            break;
+        }
 
-    if (len == 1) {
-        UCB0CTLW0 |= UCTXSTP;
-        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) { force_stop_and_clear(); return false; }
-        data[0] = UCB0RXBUF;
-        if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-        return true;
-    }
+        UCB0I2CSA  = addr7;
+        UCB0CTLW0 &= ~UCTR;     // RX
+        UCB0CTLW0 |=  UCTXSTT;  // START
 
-    for (uint16_t i = 0; i < len; i++) {
-        if (i == (len - 1)) UCB0CTLW0 |= UCTXSTP;
-        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) { force_stop_and_clear(); return false; }
-        data[i] = UCB0RXBUF;
-    }
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    return true;
+        if (!wait_while(&UCB0CTLW0, UCTXSTT, true, to)) {
+            i2c_debug("timeout waiting for RX START to clear");
+            force_stop_and_clear();
+            break;
+        }
+        if (UCB0IFG & UCNACKIFG) {
+            i2c_debug("NACK received on RX START");
+            force_stop_and_clear();
+            break;
+        }
+
+        ok = read_bytes(data, len, to);
+    } while (0);
+
+    return ok;
 }
 
 bool i2c_write_reg(uint8_t addr7, uint8_t reg, const uint8_t *data, uint16_t len, uint32_t to)
 {
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    if (!wait_while(&UCB0STATW, UCBBUSY,  true, to)) { force_stop_and_clear(); return false; }
+    bool ok = false;
 
-    UCB0I2CSA  = addr7;
-    UCB0CTLW0 |= UCTR | UCTXSTT;
+    do {
+        if (!ensure_bus_ready(to)) {
+            break;
+        }
 
-    if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
+        UCB0I2CSA  = addr7;
+        UCB0CTLW0 |= UCTR | UCTXSTT;
 
-    UCB0TXBUF = reg;
-    if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
+        if (!wait_tx_ready(to)) {
+            break;
+        }
 
-    for (uint16_t i = 0; i < len; i++) {
-        UCB0TXBUF = data[i];
-        if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-        if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
-    }
+        if (!write_byte(reg, to)) {
+            break;
+        }
 
-    UCB0CTLW0 |= UCTXSTP;
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    return true;
+        if (!write_buffer(data, len, to)) {
+            break;
+        }
+
+        UCB0CTLW0 |= UCTXSTP;
+        if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) {
+            force_stop_and_clear();
+            break;
+        }
+
+        ok = true;
+    } while (0);
+
+    return ok;
 }
 
 bool i2c_read_reg(uint8_t addr7, uint8_t reg, uint8_t *data, uint16_t len, uint32_t to)
 {
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    if (!wait_while(&UCB0STATW, UCBBUSY,  true, to)) { force_stop_and_clear(); return false; }
+    if (len == 0) return true;
+    if (!data) return false;
 
-    UCB0I2CSA  = addr7;
+    memset(data, 0, len);
 
-    // subaddress kiírása
-    UCB0CTLW0 |= UCTR | UCTXSTT;
-    if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
+    bool ok = false;
 
-    UCB0TXBUF = reg;
-    if (!wait_while(&UCB0IFG, UCTXIFG0, false, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
-
-    // repeated START olvasáshoz
-    UCB0CTLW0 &= ~UCTR;
-    UCB0CTLW0 |=  UCTXSTT;
-    if (!wait_while(&UCB0CTLW0, UCTXSTT, true, to)) { force_stop_and_clear(); return false; }
-    if (UCB0IFG & UCNACKIFG) { force_stop_and_clear(); return false; }
-
-    if (len == 1) {
-        UCB0CTLW0 |= UCTXSTP;
-        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) { force_stop_and_clear(); return false; }
-        data[0] = UCB0RXBUF;
-        if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-        return true;
-    }
-
-    for (uint16_t i = 0; i < len; i++) {
-        if (i == (len - 1)) UCB0CTLW0 |= UCTXSTP;
-        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) { force_stop_and_clear(); return false; }
-        data[i] = UCB0RXBUF;
-    }
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) { force_stop_and_clear(); return false; }
-    return true;
-}
-
-bool i2c_write_then_read(uint8_t addr7,
-                         const uint8_t *wbuf, uint16_t wlen,
-                         uint8_t *rbuf,       uint16_t rlen,
-                         uint32_t to)
-{
-    if (!i2c_write(addr7, wbuf, wlen, to)) return false;
-    return i2c_read(addr7, rbuf, rlen, to);
-}
-
-bool i2c_probe(uint8_t addr7, uint32_t to)
-{
-    // Várjuk meg, hogy az előző STOP tényleg kiment
-    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) return false;
-
-    // IFG-k takarítása (különösen UCTXIFG0, hogy ne legyen „előre set”)
-    UCB0IFG &= ~(UCTXIFG0 | UCRXIFG0 | UCNACKIFG);
-
-    UCB0I2CSA  = addr7;
-    UCB0CTLW0 |= UCTR | UCTXSTT;   // TX mód + START (cím write módban megy ki automatikusan)
-
-    // Várunk: vagy a START bit törlődik (cím kiment), vagy NACK jön
-    uint32_t t = to;
-    while (t--) {
-        if (UCB0IFG & UCNACKIFG) {
-            // NACK → STOP, flag tisztítás, és hamis
-            UCB0CTLW0 |= UCTXSTP;
-            (void)wait_while(&UCB0CTLW0, UCTXSTP, true, to);
-            UCB0IFG &= ~UCNACKIFG;
-            return false;
+    do {
+        if (!ensure_bus_ready(to)) {
+            break;
         }
-        if ((UCB0CTLW0 & UCTXSTT) == 0) break; // cím elküldve
-    }
-    if (t == 0) {
-        // timeout közben → próbáljunk kulturáltan lezárni
-        UCB0CTLW0 |= UCTXSTP;
-        (void)wait_while(&UCB0CTLW0, UCTXSTP, true, to);
+
+        UCB0I2CSA  = addr7;
+
+        // subaddress kiírása
+        UCB0CTLW0 |= UCTR | UCTXSTT;
+        if (!wait_tx_ready(to)) {
+            break;
+        }
+
+        if (!write_byte(reg, to)) {
+            i2c_debug("failed to send register address");
+            break;
+        }
+
+        // repeated START olvasáshoz
+        UCB0CTLW0 &= ~UCTR;
+        UCB0CTLW0 |=  UCTXSTT;
+        if (!wait_while(&UCB0CTLW0, UCTXSTT, true, to)) {
+            i2c_debug("timeout on repeated START");
+            force_stop_and_clear();
+            break;
+        }
+        if (UCB0IFG & UCNACKIFG) {
+            i2c_debug("NACK received after repeated START");
+            force_stop_and_clear();
+            break;
+        }
+
+        ok = read_bytes(data, len, to);
+    } while (0);
+
+    return ok;
+}
+
+// Egyetlen bájt olvasása regisztercímről (robosztus, auto-STOP + TBCNT=1)
+bool i2c_read_reg1(uint8_t addr7, uint8_t reg, uint8_t *value, uint32_t to)
+{
+    if (!value) return false;
+    *value = 0;
+
+    // biztos, ami biztos: előző tranzakció nyomai ne zavarjanak
+    UCB0IFG  &= ~UCNACKIFG;
+    UCB0TBCNT = 0;
+
+    if (!ensure_bus_ready(to)) {
         return false;
     }
 
-    // Ha idáig eljutottunk NACK nélkül, tekintsük ACK-olt címnek
-    UCB0CTLW0 |= UCTXSTP;
-    (void)wait_while(&UCB0CTLW0, UCTXSTP, true, to);
+    UCB0I2CSA = addr7;
+
+    // --- 1) Regisztercím kiírása (WRITE + START) ---
+    UCB0CTLW0 |= UCTR | UCTXSTT;
+    if (!wait_tx_ready(to)) {
+        // START / cím NACK
+        return false;
+    }
+    if (!write_byte(reg, to)) {
+        i2c_debug("failed to send register address (1B)");
+        return false;
+    }
+
+    // --- 2) 1 bájtos olvasás hardveres auto-STOP-pal ---
+    // TBCNT-et a READ START ELŐTT kell beállítani
+    UCB0TBCNT = 1;
+
+    UCB0CTLW0 &= ~UCTR;      // RX mód
+    UCB0CTLW0 |=  UCTXSTT;   // repeated START
+
+    if (!wait_while_debug("timeout waiting for RX START to clear (1B)",
+                          &UCB0CTLW0, UCTXSTT, true, to)) {
+        return false; // force_stop_and_clear már lefutott
+    }
+    if (UCB0IFG & UCNACKIFG) {
+        i2c_debug("NACK after RX START (1B)");
+        force_stop_and_clear();
+        return false;
+    }
+
+    // várjuk az egyetlen bájtot
+    if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) {
+        i2c_debug("timeout waiting for RXIFG (1B)");
+        force_stop_and_clear();
+        return false;
+    }
+    *value = UCB0RXBUF;   // a STOP-ot a hardver ütemezi (NACK+STOP)
+
+    // várjuk meg, míg a STOP kifut
+    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) {
+        i2c_debug("timeout waiting for STOP (1B)");
+        force_stop_and_clear();
+        return false;
+    }
+
+    // opcionális: vissza alapra
+    UCB0TBCNT = 0;
+
     return true;
 }
+
+/*
+bool i2c_read_reg(uint8_t addr7, uint8_t reg, uint8_t *data, uint16_t len, uint32_t to)
+{
+    if (len == 0) return true;
+    if (!data)    return false;
+
+    memset(data, 0, len);
+
+    // Biztosan NE legyen auto-STOP ezen a tranzakción
+    UCB0TBCNT = 0;
+    // Elővigyázatosságból töröljük a NACK flag-et
+    UCB0IFG &= ~UCNACKIFG;
+
+    if (!ensure_bus_ready(to)) {
+        return false;
+    }
+
+    UCB0I2CSA  = addr7;
+
+    // --- 1) Regisztercím kiírása (WRITE + START) ---
+    UCB0CTLW0 |= UCTR | UCTXSTT;
+
+    if (!wait_tx_ready(to)) {
+        // START vagy cím NACK
+        return false;
+    }
+    if (!write_byte(reg, to)) {
+        i2c_debug("failed to send register address");
+        return false;
+    }
+
+    // --- 2) Repeated START olvasáshoz ---
+    UCB0CTLW0 &= ~UCTR;       // RX mód
+    UCB0CTLW0 |=  UCTXSTT;    // START
+
+    if (!wait_while_debug("timeout waiting for RX START to clear",
+                          &UCB0CTLW0, UCTXSTT, true, to)) {
+        return false; // force_stop_and_clear() már lefutott
+    }
+    if (UCB0IFG & UCNACKIFG) {
+        i2c_debug("NACK after repeated START");
+        force_stop_and_clear();
+        return false;
+    }
+
+    // --- 3) Vétel + STOP időzítés ---
+    if (len == 1) {
+        // 1 bájt: START törlődése után azonnal kérj STOP-ot,
+        // majd várj RXIFG-re, olvass, és várd meg a STOP törlődését.
+        UCB0CTLW0 |= UCTXSTP;
+
+        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) {
+            i2c_debug("timeout waiting for RXIFG (len=1)");
+            force_stop_and_clear();
+            return false;
+        }
+        data[0] = UCB0RXBUF;
+
+        if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) {
+            i2c_debug("timeout waiting for STOP (len=1)");
+            force_stop_and_clear();
+            return false;
+        }
+        return true;
+    }
+
+    // len >= 2: amikor 2 bájt marad, ELŐBB kérj STOP-ot, AZUTÁN olvasd a (N-1). bájtot
+    for (uint16_t i = 0; i < len; i++) {
+        if (!wait_while(&UCB0IFG, UCRXIFG0, false, to)) {
+            i2c_debug("timeout waiting for RXIFG (len>=2)");
+            force_stop_and_clear();
+            return false;
+        }
+
+        if (i == (len - 2)) {          // most a második utolsó bájt érkezett meg
+            UCB0CTLW0 |= UCTXSTP;      // kérjük a STOP-ot még a kiolvasás ELŐTT
+        }
+
+        data[i] = UCB0RXBUF;           // RXBUF olvasása mindig felszabadítja a következő bájtot
+    }
+
+    if (!wait_while(&UCB0CTLW0, UCTXSTP, true, to)) {
+        i2c_debug("timeout waiting for STOP (len>=2)");
+        force_stop_and_clear();
+        return false;
+    }
+
+    return true;
+}
+*/

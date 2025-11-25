@@ -17,6 +17,9 @@
 #define LPS22HH_CTRL1_BDU         (1u<<1)
 #define LPS22HH_CTRL2_ONE_SHOT    (1u<<0)
 #define LPS22HH_CTRL2_IF_ADD_INC  (1u<<4)   // I2C auto‑increment
+#define LPS22HH_CTRL1_ODR_Pos     4
+#define LPS22HH_CTRL1_ODR_Mask    (7u<<LPS22HH_CTRL1_ODR_Pos)   // ODR[6:4]
+
 
 #define LPS22HH_WHO_AM_I_VAL      0xB3
 
@@ -27,7 +30,7 @@ typedef struct {
     bool  t_ready;
 } lps22hh_data_t;
 
-bool lps22hh_detect_address(uint8_t *addr_out);     // WHO_AM_I alapján 0x5C/0x5D
+bool lps22hh_init(uint8_t addr7);
 bool lps22hh_start_one_shot(uint8_t addr7);         // ONE_SHOT indítás
 bool lps22hh_read_results(uint8_t addr7, lps22hh_data_t *out); // blokkos kiolvasás
 

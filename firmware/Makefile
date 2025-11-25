@@ -19,26 +19,27 @@ ILIBS  := -i"$(TI_CGT)/lib"
 LIBS := ti_captivate_lib/captivate_fr2676_family.lib ti_captivate_lib/driverlib_fr2676_family.lib
 
 # >>> LINKER opció: BELÉPÉSI PONT (csak itt, a -z után fog hatni!)
-LDFLAGS := -e _c_int00
+LDFLAGS := -e _c_int00 --rom_model
 
 TARGET := firmware
 OBJS   := binary/main.obj \
-          binary/CAPT_UserConfig.obj \
-          binary/CAPT_ISR.obj \
-          binary/CAPT_App.obj \
-          binary/CAPT_Manager.obj \
-          binary/buzzer.obj \
-          binary/dali.obj \
-          binary/i2c.obj \
-          binary/touch.obj \
-          binary/uart.obj \
-		  binary/watchdog.obj \
-		  binary/gpio.obj \
-          binary/util.obj \
-          binary/ens210_temperature_sensor.obj \
-          binary/lps22hh_barometer.obj \
-          binary/stcc4_co2_sensor.obj \
-          binary/scheduler.obj
+		binary/clock.obj \
+		binary/CAPT_UserConfig.obj \
+		binary/CAPT_ISR.obj \
+		binary/CAPT_App.obj \
+		binary/CAPT_Manager.obj \
+		binary/i2c.obj \
+		binary/touch.obj \
+		binary/uart.obj \
+		binary/watchdog.obj \
+		binary/gpio.obj \
+		binary/util.obj \
+		binary/ens210_temperature_sensor.obj \
+		binary/lps22hh_barometer.obj \
+		binary/stcc4_co2_sensor.obj \
+		binary/scheduler.obj \
+		binary/sensors.obj
+		
 
 all: binary/$(TARGET).txt
 
@@ -71,7 +72,10 @@ clean:
 	rm -f $(OBJS) binary/$(TARGET).out binary/$(TARGET).map binary/$(TARGET).txt
 
 flash: binary/$(TARGET).txt
-	/opt/ti/MSPFlasher_1.3.20/MSP430Flasher -n MSP430FR2675 -w binary/$(TARGET).txt -v -g -z [VCC]
+	@echo "Erasing device memory..."
+	/opt/ti/MSPFlasher_1.3.20/MSP430Flasher -n MSP430FR2675 -e ERASE_ALL
+	@echo "Loading new firmware..."
+	/opt/ti/MSPFlasher_1.3.20/MSP430Flasher -n MSP430FR2675 -e ERASE_ALL -w binary/$(TARGET).txt -v -g -z [VCC]
 	@echo "=========================================="
 	@echo "Memory Statistics:"
 	@echo "=========================================="
