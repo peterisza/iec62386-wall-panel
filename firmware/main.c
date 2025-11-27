@@ -116,14 +116,22 @@ void adc_init(void)
    TA2CTL = TASSEL__SMCLK | MC__UP | TACLR;
 }
 
-#define DALI_PHY_ADC_THRESHOLD 2000
+#define DALI_PHY_ADC_THRESHOLD 1000
 
 #define DALI_PHY_STOP_CONDITION_LENGTH 25
 
 #define DALI_PHY_MODE_IDLE 0x00
 #define DALI_PHY_MODE_RECEIVE 0x02
 #define DALI_PHY_MODE_INVALID_FRAME 0x04
-#define DALI_PHY_MODE_MAX 0x04
+#define DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING 0x06
+#define DALI_PHY_MODE_SEND 0x08
+#define DALI_PHY_MODE_BREAK_AFTER_COLLISION 0x0A
+#define DALI_PHY_MODE_RECOVERY_AFTER_COLLISION 0x0C
+#define DALI_PHY_MODE_MAX 0x0C
+
+#define dali_tx_activate() {P1OUT |= BIT0;}
+#define dali_tx_deactivate() {P1OUT &= ~BIT0;}
+#define is_dali_tx_active() (P1OUT & BIT0)
 
 //#define majority_filter3_old(x) ((x + (x&3) + 2) & 8)
 
@@ -139,6 +147,9 @@ volatile uint8_t g_dali_current_frame_length = 0;
 volatile uint8_t g_dali_frame_processing = 0;  // Flag to prevent re-entrancy
 
 volatile uint8_t g_dali_manchester_state = 0;
+volatile uint8_t g_dali_watch_bus_before_sending_counter = 0;
+volatile uint32_t g_dali_frame_to_send_with_start_bit = 0;
+volatile uint8_t g_dali_frame_to_send_length_cycles = 0;
 
 inline void dali_phy_init_frame(void) {
    g_dali_current_frame = 0;
@@ -158,6 +169,21 @@ inline void dali_phy_build_frame(uint8_t filtered_sample) {
    g_dali_manchester_state ^= 1;
 }
 
+inline void dali_tx_send_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles) {
+    g_dali_frame_to_send_with_start_bit = 0;
+    for(uint8_t i = 0; i < frame_length; i++) {
+        g_dali_frame_to_send_with_start_bit |= (frame & 1) ^ 1;
+        g_dali_frame_to_send_with_start_bit <<= 1;
+        frame >>= 1;
+    }
+    g_dali_frame_to_send_length_cycles = frame_length*8+15;
+    g_dali_mode = DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING;
+    g_dali_watch_bus_before_sending_counter = watch_bus_cycles;
+    uart_send_string("Sending frame: ");
+    uart_send_hex((uint8_t*)&g_dali_frame_to_send_with_start_bit, (frame_length+7)/8);
+    uart_send_string("\r\n");
+}
+
 // Process received DALI frame
 // This function is called from interrupt with nested interrupts enabled
 // It can take time, and new interrupts can occur during processing
@@ -173,28 +199,27 @@ void dali_process_frame(uint32_t frame, uint8_t frame_length, bool is_valid)
    uart_send_uint_dec(frame_length);
    uart_send_string(")");
    uart_send_string("\r\n");
+   dali_tx_send_frame(207, 8, 30);
 }
 
 #pragma vector = TIMER2_A0_VECTOR
 __interrupt void TA2_CCR0_ISR(void)
 {
     P2OUT |= BIT0;
-   // clean interrupt flag
-   TA2CCTL0 &= ~CCIFG;
-  
-   uint16_t adc_value = ADCMEM0;
-   
-   ADCCTL0 |= ADCSC; // Software trigger to start next conversion
-   g_dali_last_three_unfiltered_samples >>= 1;
-   if(adc_value > DALI_PHY_ADC_THRESHOLD) { 
-       g_dali_last_three_unfiltered_samples |= 4;
-   }
-   uint8_t filtered_sample = majority_filter3[g_dali_last_three_unfiltered_samples];
-   bool frame_ready = false, frame_valid = false;
-  
-   g_adc_last_value = filtered_sample;
-
-
+    // clean interrupt flag
+    TA2CCTL0 &= ~CCIFG;
+    
+    uint16_t adc_value = ADCMEM0;
+    
+    ADCCTL0 |= ADCSC; // Software trigger to start next conversion
+    g_dali_last_three_unfiltered_samples >>= 1;
+    if(adc_value > DALI_PHY_ADC_THRESHOLD) { 
+        g_dali_last_three_unfiltered_samples |= 4;
+    }
+    uint8_t filtered_sample = majority_filter3[g_dali_last_three_unfiltered_samples];
+    bool frame_ready = false, frame_valid = false;
+    
+    g_adc_last_value = filtered_sample;
    
     switch(__even_in_range(g_dali_mode, DALI_PHY_MODE_MAX)) {
         case DALI_PHY_MODE_IDLE:
@@ -228,7 +253,44 @@ __interrupt void TA2_CCR0_ISR(void)
                 frame_ready = true;
             }
             break;
-        
+        case DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING:
+            if(adc_value <= DALI_PHY_ADC_THRESHOLD) {
+                g_dali_mode = DALI_PHY_MODE_IDLE;
+            } else {
+                g_dali_watch_bus_before_sending_counter--;
+                if(g_dali_watch_bus_before_sending_counter == 0) {
+                    g_dali_mode = DALI_PHY_MODE_SEND;
+                    //dali_tx_activate();
+                }
+            }
+            break;
+        case DALI_PHY_MODE_SEND:
+            /*if(!is_dali_tx_active() && adc_value <= DALI_PHY_ADC_THRESHOLD) {
+                g_dali_mode = DALI_PHY_MODE_BREAK_AFTER_COLLISION;
+                break;
+            }*/
+            uint8_t current_bus_level =
+                (((uint8_t)g_dali_frame_to_send_with_start_bit) ^
+                    (g_dali_frame_to_send_length_cycles >> 2)) & 1;
+            //uart_send_hex(g_dali_frame_to_send_with_start_bit, 1);
+            if(current_bus_level) {
+                dali_tx_activate();
+            } else {
+                dali_tx_deactivate();
+            }
+            if(g_dali_frame_to_send_length_cycles == 0) {
+                g_dali_mode = DALI_PHY_MODE_IDLE;
+                dali_tx_deactivate();
+            }
+            if((g_dali_frame_to_send_length_cycles & 7) == 0) {
+                g_dali_frame_to_send_with_start_bit >>= 1;
+            }
+            g_dali_frame_to_send_length_cycles--;
+            break;
+        case DALI_PHY_MODE_BREAK_AFTER_COLLISION:
+            break;
+        case DALI_PHY_MODE_RECOVERY_AFTER_COLLISION:
+            break;
         default:
             __never_executed();
             break;
@@ -284,26 +346,21 @@ int main(void)
    P2DIR |= BIT0 | BIT1;
    P2OUT &= ~(BIT0 | BIT1);
 
+   P1DIR |= BIT0;
+
    __bis_SR_register(GIE);        // Enable global interrupts
 
    uint16_t loop_counter = 0;
 
    uart_send_string("==== DALI PHY test ====\r\n");
    while(1) {
-       /*loop_counter++;
-       if (loop_counter >= 10) {
-           loop_counter = 0;
-          
-           // Toggle P1.5
-           P1OUT ^= BIT5;
-           uart_send_string("toggle\r\n");
-       }*/
+        //dali_tx_send_frame(0x52FA, 16, 15);
+        // 0x52FA is 0101 0010 1111 1010 in binary
 
-       /*uart_send_string("ADC A1: ");
-       uart_send_uint_dec(g_adc_last_value);
-       uart_send_string("\r\n");*/
+        //1111 01 
+        //uart_send_string("TX frame\r\n");
 
-       __delay_cycles(8000000); // 100ms delay at 8MHz
+        __delay_cycles(8000000); // 100ms delay at 8MHz
    }
 }
 
