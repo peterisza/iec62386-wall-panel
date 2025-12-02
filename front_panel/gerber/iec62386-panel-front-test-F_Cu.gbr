@@ -1,0 +1,15 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,9.0.4-9.0.4-0~ubuntu24.04.1*%
+%TF.CreationDate,2025-09-30T19:45:03+02:00*%
+%TF.ProjectId,iec62386-panel-front-test,69656336-3233-4383-962d-70616e656c2d,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Copper,L1,Top*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 9.0.4-9.0.4-0~ubuntu24.04.1) date 2025-09-30 19:45:03*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 APERTURE END LIST*
+M02*
