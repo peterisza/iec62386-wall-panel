@@ -38,7 +38,9 @@ OBJS   := binary/main.obj \
 		binary/lps22hh_barometer.obj \
 		binary/stcc4_co2_sensor.obj \
 		binary/scheduler.obj \
-		binary/sensors.obj
+		binary/sensors.obj \
+		binary/buzzer.obj \
+		binary/dali_phy_mac.obj
 		
 
 all: binary/$(TARGET).txt

@@ -164,6 +164,12 @@ void uart_send_uint_dec(uint32_t value)
     uart_send_string(&buf[idx]);
 }
 
+void uart_wait_for_tx_empty(void) {
+    while (tx_head != tx_tail) {
+        __delay_cycles(1);
+    }
+}
+
 // UART TX interrupt handler
 #pragma vector=USCI_A0_VECTOR
 __interrupt void USCI_A0_ISR(void) {

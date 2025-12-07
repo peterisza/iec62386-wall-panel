@@ -11,6 +11,7 @@ void uart_send_hex_byte(uint8_t byte);
 void uart_send_hex(const uint8_t* data, uint16_t len);
 void uart_send_status_prefix(bool ok);
 void uart_send_uint_dec(uint32_t value);
+void uart_wait_for_tx_empty(void);
 
 #endif // UART_H
 
