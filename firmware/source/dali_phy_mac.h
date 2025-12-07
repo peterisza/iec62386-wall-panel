@@ -18,6 +18,9 @@
 #define DALI_PHY_MODE_RECOVERY_AFTER_COLLISION 0x0C
 #define DALI_PHY_MODE_MAX 0x0C
 
+#define DALI_PHY_BUS_IDLE_BEFORE_SENDING 70
+#define DALI_PHY_BUS_IDLE_BEFORE_SENDING_JITTER 20
+
 // DALI TX control macros
 #define dali_tx_activate() {P1OUT |= BIT7;}
 #define dali_tx_deactivate() {P1OUT &= ~BIT7;}
@@ -25,7 +28,8 @@
 
 // Function declarations
 void dali_phy_init(void);
-void dali_tx_send_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles);
+void dali_tx_send_response_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles);
+void dali_tx_send_frame(uint32_t frame, uint8_t frame_length);
 void dali_process_frame(uint32_t frame, uint8_t frame_length, bool is_valid);
 
 // External variables (for debug/status)

@@ -32,7 +32,6 @@ OBJS   := binary/main.obj \
 		binary/touch.obj \
 		binary/uart.obj \
 		binary/watchdog.obj \
-		binary/gpio.obj \
 		binary/util.obj \
 		binary/ens210_temperature_sensor.obj \
 		binary/lps22hh_barometer.obj \
@@ -40,7 +39,9 @@ OBJS   := binary/main.obj \
 		binary/scheduler.obj \
 		binary/sensors.obj \
 		binary/buzzer.obj \
-		binary/dali_phy_mac.obj
+		binary/dali_phy_mac.obj \
+		binary/led.obj \
+		binary/random.obj
 		
 
 all: binary/$(TARGET).txt

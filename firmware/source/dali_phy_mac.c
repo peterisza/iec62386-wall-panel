@@ -2,6 +2,7 @@
 #include "dali_phy_mac.h"
 #include "uart.h"
 #include "util.h"
+#include "random.h"
 
 // Majority filter lookup table
 static const uint8_t majority_filter3[8] = {0,0,0,1,0,1,1,1};
@@ -20,8 +21,21 @@ volatile uint8_t g_dali_manchester_state = 0;
 volatile uint8_t g_dali_watch_bus_before_sending_counter = 0;
 volatile uint32_t g_dali_frame_to_send_with_start_bit = 0;
 volatile uint8_t g_dali_frame_to_send_length_cycles = 0;
+volatile uint8_t g_dali_is_sending_from_buffer = 0;
 
 volatile uint16_t g_adc_last_value = 0;
+
+struct dali_tx_frame_t {
+    uint32_t frame;
+    uint8_t frame_length;
+};
+
+typedef struct dali_tx_frame_t dali_tx_frame_t;
+
+#define DALI_PHY_TX_BUFFER_SIZE 10
+volatile dali_tx_frame_t g_dali_tx_buffer[DALI_PHY_TX_BUFFER_SIZE];
+volatile uint8_t g_dali_tx_buffer_start = 0;
+volatile uint8_t g_dali_tx_buffer_end = 0;
 
 // Internal helper functions
 static inline void dali_phy_init_frame(void) {
@@ -126,7 +140,10 @@ void dali_phy_init(void)
 }
 
 // Send a DALI frame
-void dali_tx_send_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles) {
+void dali_tx_send_response_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles) {
+    // Disable Timer A2 interrupt to prevent race conditions
+    TA2CCTL0 &= ~CCIE;
+    
     g_dali_frame_to_send_with_start_bit = 0;
     for(uint8_t i = 0; i < frame_length; i++) {
         g_dali_frame_to_send_with_start_bit |= (frame & 1) ^ 1;
@@ -136,9 +153,28 @@ void dali_tx_send_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_
     g_dali_frame_to_send_length_cycles = frame_length*8+15;
     g_dali_mode = DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING;
     g_dali_watch_bus_before_sending_counter = watch_bus_cycles;
+    
+    // Re-enable Timer A2 interrupt
+    TA2CCTL0 |= CCIE;
+    
     uart_send_string("Sending frame: ");
     uart_send_hex((uint8_t*)&g_dali_frame_to_send_with_start_bit, (frame_length+7)/8);
     uart_send_string("\r\n");
+}
+
+void dali_tx_send_frame(uint32_t frame, uint8_t frame_length) {
+    // Disable Timer A2 interrupt to prevent race conditions on buffer
+    TA2CCTL0 &= ~CCIE;
+    
+    g_dali_tx_buffer[g_dali_tx_buffer_end].frame = frame;
+    g_dali_tx_buffer[g_dali_tx_buffer_end].frame_length = frame_length;
+    g_dali_tx_buffer_end++;
+    if (g_dali_tx_buffer_end >= DALI_PHY_TX_BUFFER_SIZE) {
+        g_dali_tx_buffer_end = 0;
+    }
+    
+    // Re-enable Timer A2 interrupt
+    TA2CCTL0 |= CCIE;
 }
 
 // Process received DALI frame
@@ -156,7 +192,7 @@ void dali_process_frame(uint32_t frame, uint8_t frame_length, bool is_valid)
    uart_send_uint_dec(frame_length);
    uart_send_string(")");
    uart_send_string("\r\n");
-   dali_tx_send_frame(207, 8, 30);
+   dali_tx_send_response_frame(207, 8, 30);
 }
 
 // Timer A2 interrupt handler for DALI PHY processing
@@ -184,6 +220,16 @@ __interrupt void TA2_CCR0_ISR(void)
             if(!filtered_sample) {
                 dali_phy_init_frame();
                 g_dali_mode = DALI_PHY_MODE_RECEIVE;
+            } else if(
+                g_dali_tx_buffer_end != g_dali_tx_buffer_start &&
+                adc_value > DALI_PHY_ADC_THRESHOLD &&
+                g_dali_current_run_length >= DALI_PHY_BUS_IDLE_BEFORE_SENDING) {
+                    dali_tx_send_response_frame(
+                        g_dali_tx_buffer[g_dali_tx_buffer_start].frame,
+                        g_dali_tx_buffer[g_dali_tx_buffer_start].frame_length,
+                        random_range(DALI_PHY_BUS_IDLE_BEFORE_SENDING_JITTER)+5
+                    );
+                    g_dali_is_sending_from_buffer = 1;
             }
             break;
         case DALI_PHY_MODE_RECEIVE:
@@ -214,16 +260,17 @@ __interrupt void TA2_CCR0_ISR(void)
         case DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING:
             if(adc_value <= DALI_PHY_ADC_THRESHOLD) {
                 g_dali_mode = DALI_PHY_MODE_IDLE;
+                g_dali_is_sending_from_buffer = 0;
             } else {
                 g_dali_watch_bus_before_sending_counter--;
                 if(g_dali_watch_bus_before_sending_counter == 0) {
                     g_dali_mode = DALI_PHY_MODE_SEND;
-                    //dali_tx_activate();
                 }
             }
             break;
         case DALI_PHY_MODE_SEND:
             /*if(!is_dali_tx_active() && adc_value <= DALI_PHY_ADC_THRESHOLD) {
+                g_dali_is_sending_from_buffer = 0;
                 g_dali_mode = DALI_PHY_MODE_BREAK_AFTER_COLLISION;
                 break;
             }*/
@@ -239,6 +286,13 @@ __interrupt void TA2_CCR0_ISR(void)
             if(g_dali_frame_to_send_length_cycles == 0) {
                 g_dali_mode = DALI_PHY_MODE_IDLE;
                 dali_tx_deactivate();
+                if(g_dali_is_sending_from_buffer) {
+                    g_dali_tx_buffer_start++;
+                    if(g_dali_tx_buffer_start >= DALI_PHY_TX_BUFFER_SIZE) {
+                        g_dali_tx_buffer_start = 0;
+                    }
+                }
+                g_dali_is_sending_from_buffer = 0;
             }
             if((g_dali_frame_to_send_length_cycles & 7) == 0) {
                 g_dali_frame_to_send_with_start_bit >>= 1;
