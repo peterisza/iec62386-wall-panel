@@ -40,11 +40,26 @@ void clock_init_8mhz(void)
     } while (SFRIFG1 & OFIFG);         // Ha még mindig van hiba, ismétel
     
     // 3. Órajel források kiosztása
-    // MCLK = DCO (8MHz), SMCLK = DCO (8MHz), ACLK = VLO vagy REFO
+    // MCLK = DCO (8MHz), SMCLK = DCO (8MHz), ACLK = REFO (32.768 kHz)
+    // FONTOS: CapTIvate időzítő ACLK-ot használ, és 32.768 kHz-re van kalibrálva!
     // Megjegyzés: A CSCTL4 (FR2xxx) vagy CSCTL5 szabályozza a kimeneteket
-    CSCTL4 = SELA__VLOCLK | SELMS__DCOCLKDIV; // ACLK=VLO, MCLK/SMCLK=DCO
+    CSCTL4 = SELA__REFOCLK | SELMS__DCOCLKDIV; // ACLK=REFO (32.768 kHz), MCLK/SMCLK=DCO
 
     // Opcionális: Ha stabil 8MHz-en vagyunk, vissza lehet venni a wait state-et 0-ra
     // a kicsit gyorsabb működésért, de 1-gyel is tökéletesen működik.
     FRCTL0 = FRCTLPW | NWAITS_0; 
+}
+
+void delay_ms_8mhz(uint16_t ms)
+{
+    while(ms--) {
+        __delay_cycles(8000);
+    }
+}
+
+void delay_ms_1mhz(uint16_t ms)
+{
+    while(ms--) {
+        __delay_cycles(1000);
+    }
 }

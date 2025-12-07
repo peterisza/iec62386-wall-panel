@@ -48,7 +48,7 @@ static void touch_handler(tSensor *s)
 
 
 
-    if(g_pressedCnt > 0 && g_pressedCnt < PRESSED_CNT_THRESHOLD && g_sum >= -200) {
+    if(g_pressedCnt > 0 && g_pressedCnt < PRESSED_CNT_THRESHOLD && g_sum >= -150) {
         g_eventTap = 1;
     }
     if(g_pressedCnt == 1) {
@@ -66,7 +66,7 @@ static void touch_handler(tSensor *s)
         }
     }
 
-    if(g_sum < -200) {
+    if(g_sum < -150) {
         g_pressedCnt++;
     } else {
         g_pressedCnt = 0;

@@ -45,80 +45,84 @@ static inline void dali_phy_build_frame(uint8_t filtered_sample) {
 // Initialize DALI PHY layer (ADC and Timer configuration)
 void dali_phy_init(void)
 { 
-   // Configure P1.0 as Analog Input (A0) for DALI_RX
-   // Clear P1DIR to ensure Input mode
-   P1DIR &= ~BIT0;
-  
-   // Clear P1SEL bits to disable Timer function and use as GPIO/Analog
-   P1SEL0 &= ~BIT0;
-   P1SEL1 &= ~BIT0;
-  
-   // Disable pull-up/pull-down resistor
-   P1REN &= ~BIT0;
-  
-   // Disable digital input buffer for P1.0 (A0) - enable analog function
-   // On FR2xx: SYSCFG2 register controls ADC pin connections
-   // SYSCFG2 bit positions correspond to pin numbers
-   // For P1.0 (A0), we need to set the appropriate bit in SYSCFG2
-   // ADCPCTL0 means ADC Pin Control for pin 0
-   // On FR2xx, this is typically bit 0 of SYSCFG2
-   SYSCFG2 |= BIT0; // ADCPCTL0 - Enable ADC on P1.0
-  
-   // Also ensure P1.0 is not used by any other peripheral
-   // Clear any other function selects that might interfere
+    // Configure P1.7 as output for DALI_TX
+    P1DIR |= BIT7;
+    P1OUT &= ~BIT7;  // Start with TX inactive (LOW)
 
-   // Configure ADC (12-bit)
-   // Disable ENC to modify
-   ADCCTL0 &= ~ADCENC;
+    // Configure P1.0 as Analog Input (A0) for DALI_RX
+    // Clear P1DIR to ensure Input mode
+    P1DIR &= ~BIT0;
 
-   // ADCCTL0:
-   // ADCSHT_2: 16 clocks sample hold time.
-   // ADCON: Enable ADC core.
-   // ADCREF_0: Vref+ = AVCC, Vref- = AVSS (default)
-   ADCCTL0 = ADCSHT_2 | ADCON;
+    // Clear P1SEL bits to disable Timer function and use as GPIO/Analog
+    P1SEL0 &= ~BIT0;
+    P1SEL1 &= ~BIT0;
 
-   // ADCCTL1:
-   // ADCSHS_0: Software trigger (we'll trigger manually in interrupt)
-   // ADCSHP: Sample-and-hold pulse mode
-   // ADCCONSEQ_0: Single-channel, single-conversion mode
-   // We'll manually trigger the ADC in the Timer interrupt
-   // Note: ADCCONSEQ_2 (repeat mode) doesn't seem to work reliably on this device,
-   // so we use software trigger instead. The CPU overhead is minimal (~0.1% at 1MHz).
-   ADCCTL1 = ADCSHS_0 | ADCSHP | ADCCONSEQ_0;
+    // Disable pull-up/pull-down resistor
+    P1REN &= ~BIT0;
 
-   // ADCCTL2: 12-bit resolution
-   ADCCTL2 = ADCRES_2;
+    // Disable digital input buffer for P1.0 (A0) - enable analog function
+    // On FR2xx: SYSCFG2 register controls ADC pin connections
+    // SYSCFG2 bit positions correspond to pin numbers
+    // For P1.0 (A0), we need to set the appropriate bit in SYSCFG2
+    // ADCPCTL0 means ADC Pin Control for pin 0
+    // On FR2xx, this is typically bit 0 of SYSCFG2
+    SYSCFG2 |= BIT0; // ADCPCTL0 - Enable ADC on P1.0
 
-   // ADCMCTL0: Input Channel A0 (ADCINCH_0), Vref=AVCC (Default)
-   ADCMCTL0 = ADCINCH_0;
+    // Also ensure P1.0 is not used by any other peripheral
+    // Clear any other function selects that might interfere
 
-   // Enable ADC conversion (waiting for trigger)
-   ADCCTL0 |= ADCENC;
+    // Configure ADC (12-bit)
+    // Disable ENC to modify
+    ADCCTL0 &= ~ADCENC;
 
-   // Configure Timer A2 (TA2) for 9600Hz @ 8MHz
-   // Period = 8000000 / 9600 = 833.33... ≈ 833
-   TA2CCR0 = 833 - 1;
+    // ADCCTL0:
+    // ADCSHT_2: 16 clocks sample hold time.
+    // ADCON: Enable ADC core.
+    // ADCREF_0: Vref+ = AVCC, Vref- = AVSS (default)
+    ADCCTL0 = ADCSHT_2 | ADCON;
 
-   // Trigger signal on TA2.1 (ADC trigger)
-   // Set CCR1 to trigger ADC - this will generate a pulse on TA2.1 output
-   // The ADC trigger happens on the rising edge of TA2.1
-   // Set CCR1 to a value that gives enough time for the signal to stabilize
-   // Use a smaller value to trigger earlier in the period
-   // At 8 MHz, scale proportionally: 10 * 8 = 80
-   TA2CCR1 = 80; // Trigger early in the period to give more time for conversion
-  
-   // Configure TA2.1 output for ADC trigger
-   // OUTMOD_7: Reset/Set mode - output goes HIGH when timer = CCR1, LOW when timer = CCR0
-   // This creates a pulse that triggers the ADC on the rising edge
-   // The trigger signal is internal - doesn't need to go to a pin
-   // The ADC will automatically restart on each trigger in ADCCONSEQ_2 mode
-   TA2CCTL1 = OUTMOD_7; // Reset/Set - generates pulse on TA2.1
+    // ADCCTL1:
+    // ADCSHS_0: Software trigger (we'll trigger manually in interrupt)
+    // ADCSHP: Sample-and-hold pulse mode
+    // ADCCONSEQ_0: Single-channel, single-conversion mode
+    // We'll manually trigger the ADC in the Timer interrupt
+    // Note: ADCCONSEQ_2 (repeat mode) doesn't seem to work reliably on this device,
+    // so we use software trigger instead. The CPU overhead is minimal (~0.1% at 1MHz).
+    ADCCTL1 = ADCSHS_0 | ADCSHP | ADCCONSEQ_0;
 
-   // Interrupt on TA2CCR0 (Period match) - used to trigger ADC and save value
-   TA2CCTL0 = CCIE;
+    // ADCCTL2: 12-bit resolution
+    ADCCTL2 = ADCRES_2;
 
-   // Start Timer: SMCLK, Up Mode, Clear
-   TA2CTL = TASSEL__SMCLK | MC__UP | TACLR;
+    // ADCMCTL0: Input Channel A0 (ADCINCH_0), Vref=AVCC (Default)
+    ADCMCTL0 = ADCINCH_0;
+
+    // Enable ADC conversion (waiting for trigger)
+    ADCCTL0 |= ADCENC;
+
+    // Configure Timer A2 (TA2) for 9600Hz @ 8MHz
+    // Period = 8000000 / 9600 = 833.33... ≈ 833
+    TA2CCR0 = 833 - 1;
+
+    // Trigger signal on TA2.1 (ADC trigger)
+    // Set CCR1 to trigger ADC - this will generate a pulse on TA2.1 output
+    // The ADC trigger happens on the rising edge of TA2.1
+    // Set CCR1 to a value that gives enough time for the signal to stabilize
+    // Use a smaller value to trigger earlier in the period
+    // At 8 MHz, scale proportionally: 10 * 8 = 80
+    TA2CCR1 = 80; // Trigger early in the period to give more time for conversion
+
+    // Configure TA2.1 output for ADC trigger
+    // OUTMOD_7: Reset/Set mode - output goes HIGH when timer = CCR1, LOW when timer = CCR0
+    // This creates a pulse that triggers the ADC on the rising edge
+    // The trigger signal is internal - doesn't need to go to a pin
+    // The ADC will automatically restart on each trigger in ADCCONSEQ_2 mode
+    TA2CCTL1 = OUTMOD_7; // Reset/Set - generates pulse on TA2.1
+
+    // Interrupt on TA2CCR0 (Period match) - used to trigger ADC and save value
+    TA2CCTL0 = CCIE;
+
+    // Start Timer: SMCLK, Up Mode, Clear
+    TA2CTL = TASSEL__SMCLK | MC__UP | TACLR;
 }
 
 // Send a DALI frame

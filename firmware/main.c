@@ -19,7 +19,7 @@ int main(void)
 
     clock_init_8mhz();
 
-    __delay_cycles(1600000);        // Wait ~200ms at ~8MHz for clocks to stabilize
+    delay_ms_8mhz(200); 
 
     gpio_init();
 
@@ -34,8 +34,9 @@ int main(void)
 
     uart_send_string("Initializing touch...\r\n");      
     uart_wait_for_tx_empty();
+    delay_ms_8mhz(2000);
     touch_init();
-    __delay_cycles(800000);
+    delay_ms_8mhz(100);
     uart_send_string("Touch initialized\r\n");
     uart_wait_for_tx_empty();
 
@@ -43,10 +44,6 @@ int main(void)
     // Stop Timer A1 first (already done in adc_init, but ensure it's stopped)
     TA1CTL = MC__STOP | TACLR;
     TA1CCTL1 = 0;
-
-    // Configure P1.7 as output for DALI_TX
-    P1DIR |= BIT7;
-    P1OUT &= ~BIT7;  // Start with TX inactive (LOW)
 
     __bis_SR_register(GIE);        // Enable global interrupts
 
@@ -82,6 +79,11 @@ int main(void)
             uart_send_string("Down\r\n");
             g_eventDown = 0;
         }
+        /*loop_counter += g_uiApp.ui16ActiveModeScanPeriod;
+        if(loop_counter >= 1000) {
+            loop_counter = 0;
+            uart_send_string("*tick*\r\n");
+        }*/
         scheduler_tick();
         CAPT_appSleep();
     }
