@@ -20,5 +20,9 @@ uint16_t random_range(uint16_t max);
 // Usage: uint16_t r = RANDOM_MAX(100);
 #define RANDOM_MAX(max) random_range(max)
 
+// Generate random seed from ADC noise (LSB bits)
+// Uses P1.6 A6 as floating input for noise collection
+uint16_t generate_random_seed_from_adc(void);
+
 #endif // RANDOM_H
 

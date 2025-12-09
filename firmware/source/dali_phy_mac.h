@@ -21,6 +21,8 @@
 #define DALI_PHY_BUS_IDLE_BEFORE_SENDING 70
 #define DALI_PHY_BUS_IDLE_BEFORE_SENDING_JITTER 20
 
+#define DALI_PHY_BREAK_CYCLES       13  // ~1.35ms (Standard: 1.2ms - 1.4ms)
+#define DALI_PHY_RECOVER_CYCLES     40  // ~4.16ms (Standard: 4.0ms - 4.6ms)
 // DALI TX control macros
 #define dali_tx_activate() {P1OUT |= BIT7;}
 #define dali_tx_deactivate() {P1OUT &= ~BIT7;}
@@ -28,8 +30,8 @@
 
 // Function declarations
 void dali_phy_init(void);
-void dali_tx_send_response_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles);
 void dali_tx_send_frame(uint32_t frame, uint8_t frame_length);
+void dali_tx_send_backward_frame(uint8_t frame, uint8_t watch_bus_cycles);
 void dali_process_frame(uint32_t frame, uint8_t frame_length, bool is_valid);
 
 // External variables (for debug/status)
