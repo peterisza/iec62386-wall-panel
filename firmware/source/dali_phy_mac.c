@@ -7,27 +7,43 @@
 // Majority filter lookup table
 static const uint8_t majority_filter3[8] = {0,0,0,1,0,1,1,1};
 
+volatile uint8_t g_mode;
+// DALI PHY mode definitions
+#define DALI_PHY_MODE_IDLE 0x00
+#define DALI_PHY_MODE_RECEIVE 0x02
+#define DALI_PHY_MODE_INVALID_FRAME 0x04
+#define DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING 0x06
+#define DALI_PHY_MODE_SEND 0x08
+#define DALI_PHY_MODE_BREAK_AFTER_COLLISION 0x0A
+#define DALI_PHY_MODE_RECOVERY_AFTER_COLLISION 0x0C
+#define DALI_PHY_MODE_MAX 0x0C
+
 // DALI PHY state variables
-volatile uint8_t g_dali_last_three_unfiltered_samples = 0;
-volatile uint8_t g_dali_last_filtered_sample = 8;
-volatile uint8_t g_dali_mode = DALI_PHY_MODE_IDLE;
-volatile uint8_t g_dali_current_run_length = 0;
+volatile uint8_t g_last_three_unfiltered_samples = 0;
+volatile uint8_t g_last_filtered_sample = 8;
+volatile uint8_t g_mode = DALI_PHY_MODE_IDLE;
+volatile uint8_t g_current_run_length = 0;
 
-volatile uint32_t g_dali_current_frame = 0;
-volatile uint8_t g_dali_current_frame_length = 0;
-volatile uint8_t g_dali_frame_processing = 0;  // Flag to prevent re-entrancy
+volatile uint32_t g_current_frame = 0;
+volatile uint8_t g_current_frame_length = 0;
+volatile uint32_t g_last_received_frame = 0;
+volatile uint8_t g_last_received_frame_length = 0;
+volatile uint8_t g_frame_processing = 0;  // Flag to prevent re-entrancy
 
-volatile uint8_t g_dali_manchester_state = 0;
-volatile uint8_t g_dali_watch_bus_before_sending_counter = 0;
-volatile uint32_t g_dali_frame_to_send_with_start_bit = 0;
-volatile uint32_t g_dali_last_frame_to_send = 0;
-volatile uint8_t g_dali_frame_to_send_length_cycles = 0;
-volatile uint8_t g_dali_last_frame_to_send_length = 0;
-volatile uint8_t g_dali_is_backward_frame = 0;
+volatile uint8_t g_manchester_state = 0;
+volatile uint8_t g_watch_bus_before_sending_counter = 0;
+volatile uint32_t g_frame_to_send_with_start_bit = 0;
+volatile uint32_t g_last_frame_to_send = 0;
+volatile uint8_t g_frame_to_send_length_cycles = 0;
+volatile uint8_t g_last_frame_to_send_length = 0;
+volatile uint8_t g_is_backward_frame = 0;
 
-volatile uint8_t g_dali_break_after_collision_counter = 0;
-
+volatile uint8_t g_break_after_collision_counter = 0;
+volatile uint8_t g_send_retries = 0;
 volatile uint16_t g_adc_last_value = 0;
+
+// Callback function for received frames (NULL if not set)
+static dali_frame_callback_t g_frame_callback = 0;
 
 struct dali_tx_frame_t {
     uint32_t frame;
@@ -37,309 +53,297 @@ struct dali_tx_frame_t {
 typedef struct dali_tx_frame_t dali_tx_frame_t;
 
 #define DALI_PHY_TX_BUFFER_SIZE 10
-volatile dali_tx_frame_t g_dali_tx_buffer[DALI_PHY_TX_BUFFER_SIZE];
-volatile uint8_t g_dali_tx_buffer_start = 0;
-volatile uint8_t g_dali_tx_buffer_end = 0;
+volatile dali_tx_frame_t g_tx_buffer[DALI_PHY_TX_BUFFER_SIZE];
+volatile uint8_t g_tx_buffer_start = 0;
+volatile uint8_t g_tx_buffer_end = 0;
 
 // Internal helper functions
 static inline void dali_phy_init_frame(void) {
-   g_dali_current_frame = 0;
-   g_dali_manchester_state = 0;
-   g_dali_current_frame_length = 0;
+   g_current_frame = 0;
+   g_manchester_state = 0;
+   g_current_frame_length = 0;
 }
 
 static inline void dali_phy_build_frame(uint8_t filtered_sample) {
-   if(g_dali_manchester_state == 0) {
-       g_dali_current_frame <<= 1;
-       g_dali_current_frame |= filtered_sample ^ 1;
-       g_dali_current_frame_length++;
-   } else if((g_dali_current_frame & 1) != filtered_sample) {
-       g_dali_mode = DALI_PHY_MODE_INVALID_FRAME;
+   if(g_manchester_state == 0) {
+       g_current_frame <<= 1;
+       g_current_frame |= filtered_sample ^ 1;
+       g_current_frame_length++;
+   } else if((g_current_frame & 1) != filtered_sample) {
+       g_mode = DALI_PHY_MODE_INVALID_FRAME;
    }
 
-   g_dali_manchester_state ^= 1;
+   g_manchester_state ^= 1;
 }
 
-// Initialize DALI PHY layer (ADC and Timer configuration)
 void dali_phy_init(void)
 { 
-    // Configure P1.7 as output for DALI_TX
+    // P1.7: DALI_TX output
     P1DIR |= BIT7;
-    P1OUT &= ~BIT7;  // Start with TX inactive (LOW)
+    P1OUT &= ~BIT7;
 
-    // Configure P1.0 as Analog Input (A0) for DALI_RX
-    // Clear P1DIR to ensure Input mode
+    // P1.0: DALI_RX analog input (A0)
     P1DIR &= ~BIT0;
-
-    // Clear P1SEL bits to disable Timer function and use as GPIO/Analog
-    P1SEL0 &= ~BIT0;
+    P1REN &= ~BIT0;                 // no pull
+    P1SEL0 &= ~BIT0;                // maradhat GPIO
     P1SEL1 &= ~BIT0;
+    SYSCFG2 |= BIT0;                // ADCPCTL0 – ADC on P1.0
 
-    // Disable pull-up/pull-down resistor
-    P1REN &= ~BIT0;
+    // (Ha P2.0-at villogtatod az ISR-ben, itt érdemes:)
+    P2DIR |= BIT0;
+    P2OUT &= ~BIT0;
+ 
 
-    // Disable digital input buffer for P1.0 (A0) - enable analog function
-    // On FR2xx: SYSCFG2 register controls ADC pin connections
-    // SYSCFG2 bit positions correspond to pin numbers
-    // For P1.0 (A0), we need to set the appropriate bit in SYSCFG2
-    // ADCPCTL0 means ADC Pin Control for pin 0
-    // On FR2xx, this is typically bit 0 of SYSCFG2
-    SYSCFG2 |= BIT0; // ADCPCTL0 - Enable ADC on P1.0
-
-    // Also ensure P1.0 is not used by any other peripheral
-    // Clear any other function selects that might interfere
-
-    // Configure ADC (12-bit)
-    // Disable ENC to modify
     ADCCTL0 &= ~ADCENC;
-
-    // ADCCTL0:
-    // ADCSHT_2: 16 clocks sample hold time.
-    // ADCON: Enable ADC core.
-    // ADCREF_0: Vref+ = AVCC, Vref- = AVSS (default)
     ADCCTL0 = ADCSHT_2 | ADCON;
 
-    // ADCCTL1:
-    // ADCSHS_0: Software trigger (we'll trigger manually in interrupt)
-    // ADCSHP: Sample-and-hold pulse mode
-    // ADCCONSEQ_0: Single-channel, single-conversion mode
-    // We'll manually trigger the ADC in the Timer interrupt
-    // Note: ADCCONSEQ_2 (repeat mode) doesn't seem to work reliably on this device,
-    // so we use software trigger instead. The CPU overhead is minimal (~0.1% at 1MHz).
-    ADCCTL1 = ADCSHS_0 | ADCSHP | ADCCONSEQ_0;
+    // Hardware trigger from RTC event, repeat single channel
+    // ADCSHS_3: RTC event trigger (check datasheet for correct value)
+    // If ADCSHS_3 doesn't work, try ADCSHS_2 or check datasheet
+    ADCCTL1 = ADCSHS_1        // RTC event trigger
+            | ADCSHP
+            | ADCCONSEQ_2     // repeat-single-channel
+            | ADCSSEL_2;      // ADC clock = SMCLK
 
-    // ADCCTL2: 12-bit resolution
-    ADCCTL2 = ADCRES_2;
+    ADCCTL2 = ADCRES_2;       // 12 bit
+    ADCMCTL0 = ADCINCH_0;     // A0
 
-    // ADCMCTL0: Input Channel A0 (ADCINCH_0), Vref=AVCC (Default)
-    ADCMCTL0 = ADCINCH_0;
+    ADCIE |= ADCIE0;          // MEM0 interrupt enable
 
-    // Enable ADC conversion (waiting for trigger)
-    ADCCTL0 |= ADCENC;
+    ADCCTL0 |= ADCENC;       
 
-    // Configure Timer A2 (TA2) for 9600Hz @ 8MHz
-    // Period = 8000000 / 9600 = 833.33... ≈ 833
-    TA2CCR0 = 833 - 1;
+    // Configure RTC: Clock source SMCLK, prescaler 1
+    RTCCTL = RTCSS__SMCLK | RTCPS__1;
 
-    // Trigger signal on TA2.1 (ADC trigger)
-    // Set CCR1 to trigger ADC - this will generate a pulse on TA2.1 output
-    // The ADC trigger happens on the rising edge of TA2.1
-    // Set CCR1 to a value that gives enough time for the signal to stabilize
-    // Use a smaller value to trigger earlier in the period
-    // At 8 MHz, scale proportionally: 10 * 8 = 80
-    TA2CCR1 = 80; // Trigger early in the period to give more time for conversion
-
-    // Configure TA2.1 output for ADC trigger
-    // OUTMOD_7: Reset/Set mode - output goes HIGH when timer = CCR1, LOW when timer = CCR0
-    // This creates a pulse that triggers the ADC on the rising edge
-    // The trigger signal is internal - doesn't need to go to a pin
-    // The ADC will automatically restart on each trigger in ADCCONSEQ_2 mode
-    TA2CCTL1 = OUTMOD_7; // Reset/Set - generates pulse on TA2.1
-
-    // Interrupt on TA2CCR0 (Period match) - used to trigger ADC and save value
-    TA2CCTL0 = CCIE;
-
-    // Start Timer: SMCLK, Up Mode, Clear
-    TA2CTL = TASSEL__SMCLK | MC__UP | TACLR;
+    // Period: 8 MHz / 9600 ≈ 833
+    RTCMOD = 833 - 1;
 }
 
 // Send a DALI frame
-void dali_tx_send_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles, bool is_backward_frame) {
+void dali_tx_start_sending_frame(uint32_t frame, uint8_t frame_length, uint8_t watch_bus_cycles, bool is_backward_frame) {
     // Disable Timer A2 interrupt to prevent race conditions
     TA2CCTL0 &= ~CCIE;
-    
-    g_dali_frame_to_send_with_start_bit = 0;
+
+    g_last_frame_to_send = frame;
+    g_last_frame_to_send_length = frame_length;
+
+    g_frame_to_send_with_start_bit = 0;
     for(uint8_t i = 0; i < frame_length; i++) {
-        g_dali_frame_to_send_with_start_bit |= (frame & 1) ^ 1;
-        g_dali_frame_to_send_with_start_bit <<= 1;
+        g_frame_to_send_with_start_bit |= (frame & 1) ^ 1;
+        g_frame_to_send_with_start_bit <<= 1;
         frame >>= 1;
     }
-    g_dali_frame_to_send_length_cycles = frame_length*8+15;
-    g_dali_mode = DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING;
-    g_dali_watch_bus_before_sending_counter = watch_bus_cycles;
-    g_dali_is_backward_frame = is_backward_frame;
-    g_dali_last_frame_to_send = frame;
-    g_dali_last_frame_to_send_length = frame_length;
+    g_frame_to_send_length_cycles = frame_length*8+15;
+    g_mode = DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING;
+    g_watch_bus_before_sending_counter = watch_bus_cycles;
+    g_is_backward_frame = is_backward_frame;
+
     // Re-enable Timer A2 interrupt
     TA2CCTL0 |= CCIE;
     
+    g_debug_index = 0;
     uart_send_string("Sending frame: ");
-    uart_send_hex((uint8_t*)&g_dali_frame_to_send_with_start_bit, (frame_length+7)/8);
+    uart_send_hex((uint8_t*)&g_frame_to_send_with_start_bit, (frame_length+7)/8);
     uart_send_string("\r\n");
 }
 
 void dali_tx_send_backward_frame(uint8_t frame, uint8_t watch_bus_cycles) {
-    dali_tx_send_frame(frame, 8, watch_bus_cycles, true);
+    dali_tx_start_sending_frame(frame, 8, watch_bus_cycles, true);
 }
 
 void dali_tx_send_frame(uint32_t frame, uint8_t frame_length) {
     // Disable Timer A2 interrupt to prevent race conditions on buffer
     TA2CCTL0 &= ~CCIE;
     
-    g_dali_tx_buffer[g_dali_tx_buffer_end].frame = frame;
-    g_dali_tx_buffer[g_dali_tx_buffer_end].frame_length = frame_length;
-    g_dali_tx_buffer_end++;
-    if (g_dali_tx_buffer_end >= DALI_PHY_TX_BUFFER_SIZE) {
-        g_dali_tx_buffer_end = 0;
+    g_tx_buffer[g_tx_buffer_end].frame = frame;
+    g_tx_buffer[g_tx_buffer_end].frame_length = frame_length;
+    g_tx_buffer_end++;
+    if (g_tx_buffer_end >= DALI_PHY_TX_BUFFER_SIZE) {
+        g_tx_buffer_end = 0;
     }
     
     // Re-enable Timer A2 interrupt
     TA2CCTL0 |= CCIE;
 }
 
-// Process received DALI frame
-// This function is called from interrupt with nested interrupts enabled
-// It can take time, and new interrupts can occur during processing
-void dali_process_frame(uint32_t frame, uint8_t frame_length, bool is_valid)
+// Set callback function for received DALI frames
+// If callback is NULL, the default processing will be used
+void dali_phy_set_frame_callback(dali_frame_callback_t callback)
 {
-    if(!is_valid) {
-        uart_send_string("Invalid DALI frame: ");
-    } else {
-        uart_send_string("DALI frame: ");
-    }
-    uart_send_hex((uint8_t*)&frame, (frame_length+7)/8);
-    uart_send_string(" (length: ");
-    uart_send_uint_dec(frame_length);
-    uart_send_string(")");
-    uart_send_string("\r\n");
-    if(is_valid) {
-        dali_tx_send_frame(207, 8, 30, true);
+    g_frame_callback = callback;
+}
+
+inline void dali_tx_pop_front_buffer(void) {
+    if(g_tx_buffer_end == g_tx_buffer_start)
+        return;
+    g_tx_buffer_start++;
+    if(g_tx_buffer_start >= DALI_PHY_TX_BUFFER_SIZE) {
+        g_tx_buffer_start = 0;
     }
 }
 
-// Timer A2 interrupt handler for DALI PHY processing
-#pragma vector = TIMER2_A0_VECTOR
-__interrupt void TA2_CCR0_ISR(void)
+// ADC interrupt handler for DALI PHY processing
+// This is called at 9600 Hz when ADC conversion is complete
+#pragma vector = ADC_VECTOR
+__interrupt void ADC_ISR(void)
 {
     P2OUT |= BIT0;
-    // clean interrupt flag
-    TA2CCTL0 &= ~CCIFG;
     
+    // Read ADC value (reading ADCIV clears the interrupt flag)
     uint16_t adc_value = ADCMEM0;
     
-    ADCCTL0 |= ADCSC; // Software trigger to start next conversion
-    g_dali_last_three_unfiltered_samples >>= 1;
+    g_last_three_unfiltered_samples >>= 1;
     if(adc_value > DALI_PHY_ADC_THRESHOLD) { 
-        g_dali_last_three_unfiltered_samples |= 4;
+        g_last_three_unfiltered_samples |= 4;
     }
-    uint8_t filtered_sample = majority_filter3[g_dali_last_three_unfiltered_samples];
+    uint8_t filtered_sample = majority_filter3[g_last_three_unfiltered_samples];
     bool frame_ready = false, frame_valid = false;
     
     g_adc_last_value = filtered_sample;
    
-    switch(__even_in_range(g_dali_mode, DALI_PHY_MODE_MAX)) {
+    switch(__even_in_range(g_mode, DALI_PHY_MODE_MAX)) {
         case DALI_PHY_MODE_IDLE:
             if(!filtered_sample) {
                 dali_phy_init_frame();
-                g_dali_mode = DALI_PHY_MODE_RECEIVE;
+                g_mode = DALI_PHY_MODE_RECEIVE;
             } else if(
-                g_dali_tx_buffer_end != g_dali_tx_buffer_start &&
+                g_tx_buffer_end != g_tx_buffer_start &&
                 adc_value > DALI_PHY_ADC_THRESHOLD &&
-                g_dali_current_run_length >= DALI_PHY_BUS_IDLE_BEFORE_SENDING) {
-                    dali_tx_send_frame(
-                        g_dali_tx_buffer[g_dali_tx_buffer_start].frame,
-                        g_dali_tx_buffer[g_dali_tx_buffer_start].frame_length,
+                g_current_run_length >= DALI_PHY_BUS_IDLE_BEFORE_SENDING) {
+                    dali_tx_start_sending_frame(
+                        g_tx_buffer[g_tx_buffer_start].frame,
+                        g_tx_buffer[g_tx_buffer_start].frame_length,
                         random_range(DALI_PHY_BUS_IDLE_BEFORE_SENDING_JITTER)+5,
                         false
                     );
-            }
+            } else if(g_current_run_length >= DALI_PHY_FRAME_SEND_TWICE_THRESHOLD) {
+                g_last_received_frame = 0;
+                g_last_received_frame_length = 0;
+            } 
             break;
         case DALI_PHY_MODE_RECEIVE:
-            if(filtered_sample != g_dali_last_filtered_sample) {
-                if(g_dali_current_run_length >= 3 && g_dali_current_run_length <= 5) {
-                    dali_phy_build_frame(g_dali_last_filtered_sample);
-                } else if(g_dali_current_run_length >= 7 && g_dali_current_run_length <= 9) {
-                    dali_phy_build_frame(g_dali_last_filtered_sample);
-                    dali_phy_build_frame(g_dali_last_filtered_sample);
+            if(filtered_sample != g_last_filtered_sample) {
+                if(g_current_run_length >= 3 && g_current_run_length <= 5) {
+                    dali_phy_build_frame(g_last_filtered_sample);
+                } else if(g_current_run_length >= 7 && g_current_run_length <= 9) {
+                    dali_phy_build_frame(g_last_filtered_sample);
+                    dali_phy_build_frame(g_last_filtered_sample);
                 } else {
-                    g_dali_mode = DALI_PHY_MODE_INVALID_FRAME;
+                    g_mode = DALI_PHY_MODE_INVALID_FRAME;
                 }
             }
-            if(!filtered_sample && g_dali_current_run_length >= 10) {
-                g_dali_mode = DALI_PHY_MODE_INVALID_FRAME;
-            } else if(filtered_sample && g_dali_current_run_length >= DALI_PHY_STOP_CONDITION_LENGTH) {
-                g_dali_mode = DALI_PHY_MODE_IDLE;
+            if(!filtered_sample && g_current_run_length >= 10) {
+                g_mode = DALI_PHY_MODE_INVALID_FRAME;
+            } else if(filtered_sample && g_current_run_length >= DALI_PHY_STOP_CONDITION_LENGTH) {
+                g_mode = DALI_PHY_MODE_IDLE;
                 frame_ready = true;
                 frame_valid = true;
             }
             break;
         case DALI_PHY_MODE_INVALID_FRAME:
-            if(filtered_sample && g_dali_current_run_length >= DALI_PHY_STOP_CONDITION_LENGTH) {
-                g_dali_mode = DALI_PHY_MODE_IDLE;
+            if(filtered_sample && g_current_run_length >= DALI_PHY_STOP_CONDITION_LENGTH) {
+                g_mode = DALI_PHY_MODE_IDLE;
                 frame_ready = true;
             }
             break;
         case DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING:
-            if(adc_value <= DALI_PHY_ADC_THRESHOLD && !g_dali_is_backward_frame) {
-                g_dali_mode = DALI_PHY_MODE_IDLE;
+            if(adc_value <= DALI_PHY_ADC_THRESHOLD && !g_is_backward_frame) {
+                g_mode = DALI_PHY_MODE_IDLE;
             } else {
-                g_dali_watch_bus_before_sending_counter--;
-                if(g_dali_watch_bus_before_sending_counter == 0) {
-                    g_dali_mode = DALI_PHY_MODE_SEND;
+                g_watch_bus_before_sending_counter--;
+                if(g_watch_bus_before_sending_counter == 0) {
+                    g_mode = DALI_PHY_MODE_SEND;
                 }
             }
             break;
         case DALI_PHY_MODE_SEND:
-            if(!g_dali_is_backward_frame && !is_dali_tx_active() && adc_value <= DALI_PHY_ADC_THRESHOLD) {
-                g_dali_mode = DALI_PHY_MODE_BREAK_AFTER_COLLISION;
-                g_dali_break_after_collision_counter = DALI_PHY_BREAK_CYCLES;
+            /*uart_send_hex_byte(adc_value >> 8);
+            uart_send_hex_byte(adc_value & 0xFF);
+            uart_send_string(" ");*/
+            if(!g_is_backward_frame && !is_dali_tx_active() && adc_value <= DALI_PHY_ADC_THRESHOLD) {
+                g_send_retries++;
+                g_mode = DALI_PHY_MODE_BREAK_AFTER_COLLISION;
+                g_break_after_collision_counter = DALI_PHY_BREAK_CYCLES;
                 dali_tx_activate();
                 break;
             }
             uint8_t current_bus_level =
-                (((uint8_t)g_dali_frame_to_send_with_start_bit) ^
-                    (g_dali_frame_to_send_length_cycles >> 2)) & 1;
-            //uart_send_hex(g_dali_frame_to_send_with_start_bit, 1);
+                (((uint8_t)g_frame_to_send_with_start_bit) ^
+                    (g_frame_to_send_length_cycles >> 2)) & 1;
+
             if(current_bus_level) {
                 dali_tx_activate();
             } else {
                 dali_tx_deactivate();
             }
-            if(g_dali_frame_to_send_length_cycles == 0) {
-                g_dali_mode = DALI_PHY_MODE_IDLE;
+            if(g_frame_to_send_length_cycles == 0) {
+                g_mode = DALI_PHY_MODE_IDLE;
                 dali_tx_deactivate();
-                if(!g_dali_is_backward_frame) {
-                    g_dali_tx_buffer_start++;
-                    if(g_dali_tx_buffer_start >= DALI_PHY_TX_BUFFER_SIZE) {
-                        g_dali_tx_buffer_start = 0;
-                    }
+                if(!g_is_backward_frame) {
+                    dali_tx_pop_front_buffer();
                 }
+                g_send_retries = 0;
             }
-            if((g_dali_frame_to_send_length_cycles & 7) == 0) {
-                g_dali_frame_to_send_with_start_bit >>= 1;
+            if((g_frame_to_send_length_cycles & 7) == 0) {
+                g_frame_to_send_with_start_bit >>= 1;
             }
-            g_dali_frame_to_send_length_cycles--;
+            g_frame_to_send_length_cycles--;
             break;
         case DALI_PHY_MODE_BREAK_AFTER_COLLISION:
-            if(g_dali_break_after_collision_counter == 0) {
+            if(g_break_after_collision_counter == 0) {
                 dali_tx_deactivate();
-                dali_tx_send_frame(
-                    g_dali_last_frame_to_send,
-                    g_dali_last_frame_to_send_length,
-                    DALI_PHY_RECOVER_CYCLES,
-                    false);
+                if(g_send_retries < DALI_SEND_MAX_RETRIES) {
+                    //uart_send_string("Resending frame after collision\r\n");
+                    dali_tx_start_sending_frame(
+                        g_last_frame_to_send,
+                        g_last_frame_to_send_length,
+                        DALI_PHY_RECOVER_CYCLES,
+                        false);
+                } else {
+                    /*uart_send_string("Failed to send frame after ");
+                    uart_send_uint_dec(g_send_retries);
+                    uart_send_string(" retries\r\n");*/
+                    g_mode = DALI_PHY_MODE_IDLE;
+                    if(!g_is_backward_frame) {
+                        dali_tx_pop_front_buffer();
+                    }
+                    g_send_retries = 0;
+                }
             }
-            g_dali_break_after_collision_counter--;
+            g_break_after_collision_counter--;
             break;
         default:
             __never_executed();
             break;
     }
 
-    if(filtered_sample == g_dali_last_filtered_sample) {
-        g_dali_current_run_length++;
+    if(filtered_sample == g_last_filtered_sample) {
+        g_current_run_length++;
     } else {
-        g_dali_last_filtered_sample = filtered_sample;
-        g_dali_current_run_length = 1;   
+        g_last_filtered_sample = filtered_sample;
+        g_current_run_length = 1;   
     }
    
-   if(frame_ready && !g_dali_frame_processing) {
-       g_dali_frame_processing = 1;
-      
-       __enable_interrupt();
-       dali_process_frame(g_dali_current_frame, g_dali_current_frame_length, frame_valid);
-       g_dali_frame_processing = 0;
-   }
-   P2OUT &= ~BIT0;
+    if(frame_ready && !g_frame_processing && g_frame_callback != 0) {
+        bool is_received_twice =
+            g_current_frame_length == g_last_received_frame_length &&
+            g_current_frame == g_last_received_frame;
+
+        g_last_received_frame = g_current_frame;
+        g_last_received_frame_length = g_current_frame_length;
+
+        g_frame_processing = 1;
+
+        __enable_interrupt();
+        g_frame_callback(
+            g_current_frame,
+            g_current_frame_length,
+            frame_valid,
+            is_received_twice
+        );
+
+        g_frame_processing = 0;
+    }
+    P2OUT &= ~BIT0;
 }
 

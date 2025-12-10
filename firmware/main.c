@@ -11,6 +11,7 @@
 #include "sensors.h"
 #include "captivate.h"
 #include "dali_phy_mac.h"
+#include "dali_device_generic.h"
 #include "random.h"
 
 #define CLOCK_HZ 8000000u
@@ -38,6 +39,7 @@ int main(void)
     uart_send_string("\r\n");
     
     dali_phy_init();
+    dali_phy_set_frame_callback(process_dali_frame);
     
     i2c_init(CLOCK_HZ, 100000u);
 

@@ -40,6 +40,7 @@ OBJS   := binary/main.obj \
 		binary/sensors.obj \
 		binary/buzzer.obj \
 		binary/dali_phy_mac.obj \
+		binary/dali_device_generic.obj \
 		binary/led.obj \
 		binary/random.obj
 		
