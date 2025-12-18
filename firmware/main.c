@@ -16,6 +16,33 @@
 
 #define CLOCK_HZ 8000000u
 
+void send_ens210_data_task(void)
+{
+    if(g_ens210_data.valid) {
+        int16_t temp = g_ens210_data.temperature_C * 10 + 500;
+        dali_tx_send_frame(0x9000 | (temp & 0xFFF), 16);
+        int16_t humidity = g_ens210_data.humidity_RH * 10;
+        dali_tx_send_frame(0xA000 | (humidity & 0xFFF), 16);
+    }
+}
+
+void send_lps22hh_data_task(void)
+{
+    if(g_lps22hh_data.valid) {
+        int16_t pressure = g_lps22hh_data.pressure_hPa;
+        dali_tx_send_frame(0xB000 | (pressure & 0xFFF), 16);
+    }
+}
+
+
+void send_stcc4_data_task(void)
+{
+    if(g_stcc4_data.valid) {
+        int16_t co2 = g_stcc4_data.co2_ppm / 10;
+        dali_tx_send_frame(0xC000 | (co2 & 0xFFF), 16);
+    }
+}
+
 int main(void)
 {
     disable_watchdog();
@@ -60,14 +87,17 @@ int main(void)
     scheduler_init(g_uiApp.ui16ActiveModeScanPeriod, 1000);
 
     scheduler_add_task(ens210_start_measurement_task, 250);
-    scheduler_add_task(ens210_read_results_task, 4000);
+    scheduler_add_task(ens210_read_results_task, 100);
+    scheduler_add_task(send_ens210_data_task, 4000);
 
     scheduler_add_task(lps22hh_start_measurement_task, 500);
-    scheduler_add_task(lps22hh_read_results_task, 4000);
+    scheduler_add_task(lps22hh_read_results_task, 100);
+    scheduler_add_task(send_lps22hh_data_task, 4000);
 
     scheduler_add_task(stcc4_push_compensation_task, 300);
     scheduler_add_task(stcc4_start_measurement_task, 400);
-    scheduler_add_task(stcc4_read_results_task, 5000);
+    scheduler_add_task(stcc4_read_results_task, 100);
+    scheduler_add_task(send_stcc4_data_task, 5000);
 
     uart_send_string("==== DALI PHY test ====\r\n");
     while(1) {
@@ -75,19 +105,37 @@ int main(void)
         if(g_eventTap) {
             buzzer_beep(2000, 5);
             uart_send_string("Tap\r\n");
-            dali_tx_send_frame(0x0040E0, 24);
+            dali_tx_send_frame(0x8001, 16);
             g_eventTap = 0;
         }
-        if(g_eventUp) {
+        if(g_eventHold) {
+            buzzer_beep(3000, 5);
+            uart_send_string("Hold\r\n");
+            dali_tx_send_frame(0x8002, 16);
+            g_eventHold = 0;
+        }
+        if(g_eventSwipeUp) {
             buzzer_beep(4000, 5);
+            uart_send_string("Swipe Up\r\n");
+            dali_tx_send_frame(0x8003, 16);
+            g_eventSwipeUp = 0;
+        }
+        if(g_eventSwipeDown) {
+            buzzer_beep(1000, 5);
+            uart_send_string("Swipe Down\r\n");
+            dali_tx_send_frame(0x8004, 16);
+            g_eventSwipeDown = 0;
+        }
+        if(g_eventUp) {
+            buzzer_beep(2000, 5);
             uart_send_string("Up\r\n");
-            dali_tx_send_frame(0xE04000, 24);
+            dali_tx_send_frame(0x8005, 16);
             g_eventUp = 0;
         }
         if(g_eventDown) {
             buzzer_beep(1000, 5);
             uart_send_string("Down\r\n");
-            dali_tx_send_frame(0xFFFFFF, 24);
+            dali_tx_send_frame(0x8006, 16);
             g_eventDown = 0;
         }
         /*loop_counter += g_uiApp.ui16ActiveModeScanPeriod;

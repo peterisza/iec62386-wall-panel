@@ -14,6 +14,7 @@ typedef struct {
     float    humidity_RH;   // SHT4x formula alapján
     uint16_t status_raw; // nyers státusz (Byte9..Byte10)
     bool     crc_ok;     // mindhárom szó CRC-je OK volt
+    bool     valid;
 } stcc4_data_t;
 
 // Single-shot mérés indítása (végrehajtási idő ~500 ms)

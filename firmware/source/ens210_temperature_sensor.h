@@ -25,6 +25,7 @@ typedef struct {
     float humidity_RH;   // %
     bool  t_valid_crc_ok;
     bool  h_valid_crc_ok;
+    bool  valid;
 } ens210_data_t;
 
 bool ens210_start_single_shot(uint8_t which); // which: ENS210_START_T/H (vagy mindkettő)

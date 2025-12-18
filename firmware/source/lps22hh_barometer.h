@@ -28,6 +28,7 @@ typedef struct {
     float temperature_C;
     bool  p_ready;
     bool  t_ready;
+    bool  valid;
 } lps22hh_data_t;
 
 bool lps22hh_init(uint8_t addr7);

@@ -24,6 +24,7 @@ void stcc4_push_compensation_task(void)
 
 void ens210_read_results_task(void)
 {
+    g_ens210_data.valid = false;
     if (!ens210_read_results(&g_ens210_data)) {
         uart_send_status_prefix(false);
         uart_send_string("ENS210 read failed\r\n");
@@ -41,11 +42,14 @@ void ens210_read_results_task(void)
     uart_send_string(ftoa(g_ens210_data.humidity_RH));
     uart_send_string("% ");
     uart_send_string(g_ens210_data.h_valid_crc_ok ? "(CRC ok)\r\n" : "(CRC error)\r\n");
+    
+    g_ens210_data.valid = g_ens210_data.t_valid_crc_ok && g_ens210_data.h_valid_crc_ok;
     //buzzer_beep(3000, 10);
 }
 
 void lps22hh_read_results_task(void)
 {
+    g_lps22hh_data.valid = false;
     if (!lps22hh_read_results(LPS22HH_ADDR_SA0_VDD, &g_lps22hh_data)) {
         uart_send_status_prefix(false);
         uart_send_string("LPS22HH read failed\r\n");
@@ -78,11 +82,13 @@ void lps22hh_read_results_task(void)
         uart_send_string(" (delta > 2C)");
     }
     uart_send_string("\r\n");
+    g_lps22hh_data.valid = g_ens210_data.t_valid_crc_ok && temp_ok;
     //buzzer_beep(3500, 10);
 }
 
 void stcc4_read_results_task(void)
 {
+    g_stcc4_data.valid = false;
     if (!stcc4_read_measurement(STCC4_ADDR_GND, &g_stcc4_data)) {
         uart_send_status_prefix(false);
         uart_send_string("STCC4 read failed\r\n");
@@ -104,6 +110,7 @@ void stcc4_read_results_task(void)
     uart_send_string(ftoa(g_stcc4_data.humidity_RH));
     uart_send_string("% ");
     uart_send_string(g_stcc4_data.crc_ok ? "(CRC ok)\r\n" : "(CRC error)\r\n");
+    g_stcc4_data.valid = g_stcc4_data.crc_ok;
     //buzzer_beep(4000, 10);
 }
 

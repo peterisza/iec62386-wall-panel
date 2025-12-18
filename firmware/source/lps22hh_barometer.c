@@ -55,7 +55,6 @@ bool lps22hh_start_one_shot(uint8_t addr7)
 
 bool lps22hh_read_results(uint8_t addr7, lps22hh_data_t *out)
 {
-
     if (!out) return false;
     out->p_ready = out->t_ready = false;
     out->pressure_hPa = 0.0f;

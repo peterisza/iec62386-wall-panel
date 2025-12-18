@@ -35,6 +35,7 @@ volatile uint8_t g_watch_bus_before_sending_counter = 0;
 volatile uint32_t g_frame_to_send_with_start_bit = 0;
 volatile uint32_t g_last_frame_to_send = 0;
 volatile uint8_t g_frame_to_send_length_cycles = 0;
+volatile uint8_t g_frame_send_counter = 0;
 volatile uint8_t g_last_frame_to_send_length = 0;
 volatile uint8_t g_is_backward_frame = 0;
 
@@ -129,11 +130,13 @@ void dali_tx_start_sending_frame(uint32_t frame, uint8_t frame_length, uint8_t w
 
     g_frame_to_send_with_start_bit = 0;
     for(uint8_t i = 0; i < frame_length; i++) {
-        g_frame_to_send_with_start_bit |= (frame & 1) ^ 1;
+        g_frame_to_send_with_start_bit |= (frame & 1);
         g_frame_to_send_with_start_bit <<= 1;
         frame >>= 1;
     }
-    g_frame_to_send_length_cycles = frame_length*8+15;
+    g_frame_to_send_with_start_bit |= 1;
+    g_frame_to_send_length_cycles = frame_length*8 + 8 + 3;
+    g_frame_send_counter = 0;
     g_mode = DALI_PHY_MODE_WATCH_BUS_BEFORE_SENDING;
     g_watch_bus_before_sending_counter = watch_bus_cycles;
     g_is_backward_frame = is_backward_frame;
@@ -141,7 +144,6 @@ void dali_tx_start_sending_frame(uint32_t frame, uint8_t frame_length, uint8_t w
     // Re-enable Timer A2 interrupt
     TA2CCTL0 |= CCIE;
     
-    g_debug_index = 0;
     uart_send_string("Sending frame: ");
     uart_send_hex((uint8_t*)&g_frame_to_send_with_start_bit, (frame_length+7)/8);
     uart_send_string("\r\n");
@@ -267,27 +269,29 @@ __interrupt void ADC_ISR(void)
                 dali_tx_activate();
                 break;
             }
-            uint8_t current_bus_level =
-                (((uint8_t)g_frame_to_send_with_start_bit) ^
-                    (g_frame_to_send_length_cycles >> 2)) & 1;
 
-            if(current_bus_level) {
-                dali_tx_activate();
-            } else {
-                dali_tx_deactivate();
-            }
-            if(g_frame_to_send_length_cycles == 0) {
+            if(g_frame_send_counter >= g_frame_to_send_length_cycles) {
                 g_mode = DALI_PHY_MODE_IDLE;
                 dali_tx_deactivate();
                 if(!g_is_backward_frame) {
                     dali_tx_pop_front_buffer();
                 }
                 g_send_retries = 0;
-            }
-            if((g_frame_to_send_length_cycles & 7) == 0) {
-                g_frame_to_send_with_start_bit >>= 1;
-            }
-            g_frame_to_send_length_cycles--;
+            } else {
+                uint8_t current_bus_level =
+                    (((uint8_t)g_frame_to_send_with_start_bit) ^
+                        (g_frame_send_counter >> 2)) & 1;
+                if(current_bus_level) {
+                    dali_tx_activate();
+                } else {
+                    dali_tx_deactivate();
+                }
+                g_frame_send_counter++;
+                if((g_frame_send_counter & 7) == 0) {
+                    g_frame_to_send_with_start_bit >>= 1;
+                }
+            }            
+
             break;
         case DALI_PHY_MODE_BREAK_AFTER_COLLISION:
             if(g_break_after_collision_counter == 0) {
