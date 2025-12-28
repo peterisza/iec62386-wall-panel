@@ -100,48 +100,85 @@ int main(void)
     scheduler_add_task(send_stcc4_data_task, 5000);
 
     uart_send_string("==== DALI PHY test ====\r\n");
+    uint16_t cycles1 = 1000;
+    uint16_t cycles2 = 1000;
+    uint8_t periods = 1;
+    
     while(1) {
         CAPT_appHandler();
         if(g_eventTap) {
-            buzzer_beep(2000, 5);
+            buzzer_click(750, 50, 10);
             uart_send_string("Tap\r\n");
             dali_tx_send_frame(0x8001, 16);
             g_eventTap = 0;
         }
+        if(g_eventTouch) {
+            buzzer_click(750, 100, 10);
+            uart_send_string("Touch\r\n");
+            g_eventTouch = 0;
+        }
         if(g_eventHold) {
-            buzzer_beep(3000, 5);
+            //buzzer_beep(3000, 5);
             uart_send_string("Hold\r\n");
             dali_tx_send_frame(0x8002, 16);
             g_eventHold = 0;
         }
         if(g_eventSwipeUp) {
-            buzzer_beep(4000, 5);
+            //buzzer_click(250);
+            //buzzer_beep(2000, 50);
+            buzzer_click(50, 50, 50);
             uart_send_string("Swipe Up\r\n");
             dali_tx_send_frame(0x8003, 16);
             g_eventSwipeUp = 0;
         }
         if(g_eventSwipeDown) {
-            buzzer_beep(1000, 5);
+            //buzzer_click(250);
+            //buzzer_beep(1000, 50);
+            buzzer_click(3000, 50, 50);
             uart_send_string("Swipe Down\r\n");
             dali_tx_send_frame(0x8004, 16);
             g_eventSwipeDown = 0;
         }
         if(g_eventUp) {
-            buzzer_beep(2000, 5);
+            //buzzer_click(50);
+            buzzer_click(750, 50, 10);
             uart_send_string("Up\r\n");
             dali_tx_send_frame(0x8005, 16);
             g_eventUp = 0;
         }
         if(g_eventDown) {
-            buzzer_beep(1000, 5);
+            //buzzer_click(50);
+            buzzer_click(750, 50, 10);
             uart_send_string("Down\r\n");
             dali_tx_send_frame(0x8006, 16);
             g_eventDown = 0;
         }
+        if(g_debug_frame != 0) {
+            uart_send_string("Debug frame: ");
+            uart_send_hex((uint8_t*)&g_debug_frame, 2);
+            uart_send_string("\r\n");
+            if((g_debug_frame & 0xF000) == 0x8000) {
+                cycles1 = (g_debug_frame & 0x0FFF) << 2;
+            } else if((g_debug_frame & 0xF000) == 0x9000) {
+                cycles2 = (g_debug_frame & 0x0FFF) << 2;
+            } else if((g_debug_frame & 0xF000) == 0xA000) {
+                periods = g_debug_frame & 0xFF;
+            }
+            uart_send_string("Cycles1: ");
+            uart_send_uint_dec(cycles1);
+            uart_send_string(" ");
+            uart_send_string("Cycles2: ");
+            uart_send_uint_dec(cycles2);
+            uart_send_string(" ");
+            uart_send_string("Periods: ");
+            uart_send_uint_dec(periods);
+            uart_send_string("\r\n");
+            g_debug_frame = 0;
+        }
         /*loop_counter += g_uiApp.ui16ActiveModeScanPeriod;
         if(loop_counter >= 1000) {
             loop_counter = 0;
-            uart_send_string("*tick*\r\n");
+            buzzer_click(cycles1, cycles2, periods);
         }*/
         scheduler_tick();
         CAPT_appSleep();

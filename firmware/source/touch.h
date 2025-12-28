@@ -9,6 +9,7 @@ extern volatile int32_t g_y;
 extern volatile int16_t g_pressedCnt;
 extern volatile int16_t g_lastY;
 extern volatile int16_t g_eventTap;
+extern volatile int16_t g_eventTouch;
 extern volatile int16_t g_eventHold;
 extern volatile int16_t g_eventSwipeUp;
 extern volatile int16_t g_eventSwipeDown;

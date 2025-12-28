@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include "dali_phy_mac.h"
 
+extern volatile uint16_t g_debug_frame;
+
 void process_dali_frame(uint32_t frame, uint8_t frame_length, bool is_valid, bool received_twice);
 
 #endif

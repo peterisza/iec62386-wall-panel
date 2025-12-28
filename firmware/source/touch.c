@@ -10,6 +10,7 @@ volatile int16_t g_pressedCnt = 0;
 volatile int16_t g_lastY = 0;
 volatile int16_t
     g_eventTap = 0,
+    g_eventTouch = 0,
     g_eventHold = 0,
     g_eventUp = 0,
     g_eventDown = 0,
@@ -19,7 +20,7 @@ volatile int16_t
 volatile uint8_t g_upButtonActive = 0, g_downButtonActive = 0, g_sliderActive = 0;
 
 #define PRESSED_CNT_THRESHOLD 15
-#define SLIDE_STEP_SIZE 15
+#define SLIDE_STEP_SIZE 20
 
 #define BIG_BUTTON_ACTIVATE_THRESHOLD -250
 #define BIG_BUTTON_DEACTIVATE_THRESHOLD -150
@@ -60,14 +61,14 @@ static void touch_handler(tSensor *s)
     g_x = (-127 * sum1 + 127 * sum3) / g_sum;
     g_y = (127 * sumup - 127 * sumdown) / g_sum;
 
-    if(btn_d6 < BIG_BUTTON_ACTIVATE_THRESHOLD && !g_upButtonActive) {
+    if(btn_d6 < BIG_BUTTON_ACTIVATE_THRESHOLD && !g_upButtonActive && g_sum > SLIDER_DEACTIVATE_THRESHOLD) {
         g_upButtonActive = 1;
         g_eventUp = 1;
     } else if(btn_d6 > BIG_BUTTON_DEACTIVATE_THRESHOLD && g_upButtonActive) {
         g_upButtonActive = 0;
     }
     
-    if(btn_d3 < BIG_BUTTON_ACTIVATE_THRESHOLD && !g_downButtonActive) {
+    if(btn_d3 < BIG_BUTTON_ACTIVATE_THRESHOLD && !g_downButtonActive && g_sum > SLIDER_DEACTIVATE_THRESHOLD) {
         g_downButtonActive = 1;
         g_eventDown = 1;
     } else if(btn_d3 > BIG_BUTTON_DEACTIVATE_THRESHOLD && g_downButtonActive) {
@@ -78,7 +79,7 @@ static void touch_handler(tSensor *s)
         //beep(10, 20);
         g_lastY = g_y;
     }
-    if(g_pressedCnt > PRESSED_CNT_THRESHOLD) {
+    /*if(g_pressedCnt > PRESSED_CNT_THRESHOLD) {
         if(g_y > g_lastY + SLIDE_STEP_SIZE) {
             g_eventSwipeUp = 1;
             g_lastY = g_y;
@@ -87,21 +88,26 @@ static void touch_handler(tSensor *s)
             g_eventSwipeDown = 1;
             g_lastY = g_y;
         }
-    }
+    }*/
 
     if(g_sum < SLIDER_ACTIVATE_THRESHOLD && !g_sliderActive ) {
         g_sliderActive = 1;
-        g_eventTap = 1;
+        g_eventTouch = 1;
+        g_lastY = g_y;
     }
     if(g_sum > SLIDER_DEACTIVATE_THRESHOLD && g_sliderActive) {
+        if(g_y > g_lastY + SLIDE_STEP_SIZE) {
+            g_eventSwipeUp = 1;
+        } else if(g_y < g_lastY - SLIDE_STEP_SIZE) {
+            g_eventSwipeDown = 1;
+        } else {
+            g_eventTap = 1;
+        }
         g_sliderActive = 0;
     }  
 
     if(g_sliderActive) {
         g_pressedCnt++;
-        if(g_pressedCnt == PRESSED_CNT_THRESHOLD) {
-            g_eventHold = 1;
-        }
     } else {
         g_pressedCnt = 0;
     }

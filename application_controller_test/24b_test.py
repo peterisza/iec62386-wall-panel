@@ -22,19 +22,23 @@ print(f"Eszköz megtalálva: {device_path}")
 
 # Driver inicializálása (szinkron mód, mert egyszerűbb kezdőknek)
 driver = SyncHassebDALIUSBDriver()  # Vagy SyncHassebDALIUSBDriver, ha a verzióban így van
-
+driver.enableSniffing()
 # Hasseb USB protokoll 24-bitre (Mode 4):
 # Report ID (1) + Command (4) + 3 adatbájt + padding
 #usb_packet = [0x01, 0x04, b2, b1, b0, 0x00, 0x00, 0x00]
-usb_packet = [0x07, 0x02, 16, 0, 0, 0, 0x44, 0x44]
-driver.device.write(usb_packet)
+packet = 1200 + 0x8000
 
-while True:
-    frame = driver.receive()   # ez most normál master módban működik
-    if frame:
-        print(f"Egyéb keret: {frame}")
+def setParam(param, value):
+    if param != 0xA000:
+        value = value >> 2
+    packet = param + value
+    usb_packet = [0x07, 0x02, 16, 0, 0, 0, (packet >> 8) & 0xFF, packet & 0xFF]
+    driver.device.write(usb_packet)
 
-    time.sleep(0.001)
+setParam(0x8000, 50)
+setParam(0x9000, 2000)
+setParam(0xA000, 34)
+
 exit(1)
 
 # Példa: Lekérdezés küldése és válasz fogadása (fogadás)
